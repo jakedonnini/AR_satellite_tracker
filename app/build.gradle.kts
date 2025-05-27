@@ -49,6 +49,19 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+
+    // ✅ ARCore (Sceneform removed from MavenCentral, use ARCore directly)
+    implementation("com.google.ar:core:1.49.0")
+
+    // ✅ Google Play Services Location (GPS)
+    implementation("com.google.android.gms:play-services-location:21.3.0")
+
+    // ✅ Optional: Coroutines (if you want to async/await location/sensor work)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("io.github.sceneview:arsceneview:2.3.0")
+    implementation(libs.androidx.appcompat.v161)
+
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
