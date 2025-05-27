@@ -60,6 +60,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("io.github.sceneview:arsceneview:2.3.0")
     implementation(libs.androidx.appcompat.v161)
+    implementation("com.github.BatuhanBayar:sgp4:1.0.0")
 
 
     testImplementation(libs.junit)

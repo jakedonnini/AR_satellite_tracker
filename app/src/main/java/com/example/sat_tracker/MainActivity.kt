@@ -14,6 +14,10 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.Priority
 import io.github.sceneview.ar.ARSceneView
 
 class MainActivity : AppCompatActivity(), SensorEventListener {
@@ -24,6 +28,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var arSceneView: ARSceneView
+    private lateinit var locationCallback: LocationCallback
 
     private val LOCATION_PERMISSION_CODE = 1001
 
@@ -60,9 +65,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     override fun onPause() {
         super.onPause()
+        fusedLocationClient.removeLocationUpdates(locationCallback)
         sensorManager.unregisterListener(this)
     }
-
     override fun onDestroy() {
         super.onDestroy()
         arSceneView.destroy()
@@ -81,19 +86,33 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 LOCATION_PERMISSION_CODE
             )
         } else {
-            getLocation()
+            startLocationUpdates()
         }
     }
 
     @RequiresPermission(allOf = [Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION])
-    private fun getLocation() {
-        fusedLocationClient.lastLocation
-            .addOnSuccessListener { location ->
-                if (location != null) {
+    private fun startLocationUpdates() {
+        val locationRequest = LocationRequest.create().apply {
+            interval = 2000L                    // Every 2 seconds
+            fastestInterval = 1000L            // At most every 1 second
+            priority = Priority.PRIORITY_HIGH_ACCURACY
+        }
+
+        locationCallback = object : LocationCallback() {
+            override fun onLocationResult(result: LocationResult) {
+                result.lastLocation?.let { location ->
                     Log.d("GPS", "Lat: ${location.latitude}, Lon: ${location.longitude}, Alt: ${location.altitude}")
                 }
             }
+        }
+
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        ) {
+            fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, mainLooper)
+        }
     }
+
 
     override fun onSensorChanged(event: SensorEvent?) {
         event?.let {

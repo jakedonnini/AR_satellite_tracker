@@ -22,7 +22,6 @@
         <activity
             android:name="com.example.sat_tracker.MainActivity"
             android:exported="true"
-            android:label="@string/app_name"
             android:theme="@style/Theme.Sat_Tracker">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
