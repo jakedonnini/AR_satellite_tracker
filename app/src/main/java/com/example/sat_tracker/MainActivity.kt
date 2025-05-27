@@ -25,12 +25,26 @@ import org.orekit.time.TimeScalesFactory
 import org.orekit.data.DataContext
 import java.io.File
 import java.io.FileOutputStream
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import org.orekit.propagation.analytical.tle.TLEPropagator
+import org.orekit.frames.FramesFactory
+import org.orekit.bodies.OneAxisEllipsoid
+import org.orekit.utils.IERSConventions
+//import org.orekit.models.earth.GeoMagneticModelFactory
+import org.orekit.bodies.GeodeticPoint
+import org.orekit.frames.TopocentricFrame
+import org.orekit.utils.PVCoordinatesProvider
 
 class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private lateinit var sensorManager: SensorManager
     private var gravity: FloatArray? = null
     private var geomagnetic: FloatArray? = null
+    private var currentLat= 0.0
+    private var currentLon = 0.0
+    private var currentAltMeters = 0.0
+
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var arSceneView: ARSceneView
@@ -61,6 +75,50 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         Log.d("OREKIT", "Current UTC time: $now")
 
         requestLocationPermission()
+
+        lifecycleScope.launch {
+            val tleList = TLEFetcher.fetchFromCelestrak()
+            Log.d("OREKIT", "Fetched ${tleList.size} TLEs")
+
+            val utc = TimeScalesFactory.getUTC()
+            val now = AbsoluteDate(java.util.Date(), utc)
+
+            // Earth shape
+            val earth = OneAxisEllipsoid(
+                6378137.0, 1.0 / 298.257223563,
+                FramesFactory.getITRF(IERSConventions.IERS_2010, true)
+            )
+
+            // Sample location (can use real GPS)
+            val observer = GeodeticPoint(
+                Math.toRadians(currentLat),
+                Math.toRadians(currentLon),
+                currentAltMeters
+            )
+            Log.d("POS", "Observer altitude: ${observer.altitude} meters")
+
+            val topo = TopocentricFrame(earth, observer, "Observer")
+
+            for (tle in tleList) {
+                try {
+                    val propagator = TLEPropagator.selectExtrapolator(tle)
+                    val pv = propagator.getPVCoordinates(now, FramesFactory.getTEME()) // or use propagator.frame
+                    val elevation = Math.toDegrees(topo.getElevation(pv.position, FramesFactory.getTEME(), now))
+
+
+
+                    Log.d("ELEVATION", "Sat ${tle.satelliteNumber} at $elevation°")
+                    Log.d("DEBUG_SAT", "Pos: ${tle.satelliteNumber}, Frame: ${propagator.frame.name}, Time: $now")
+
+                    // only show sats that are above 10 degrees
+                    if (elevation > 10) {
+                        Log.d("VISIBLE", "Satellite ${tle.satelliteNumber} is visible at $elevation°")
+                    }
+                } catch (e: Exception) {
+                    Log.w("TLE_ERROR", "Could not propagate satellite ${tle.satelliteNumber}", e)
+                }
+            }
+        }
     }
 
 
@@ -119,6 +177,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     val lat = location.latitude
                     val lon = location.longitude
                     val alt = location.altitude
+                    currentLat = lat
+                    currentLon = lon
+                    currentAltMeters = alt
                     Log.d("GPS", "Lat: $lat, Lon: $lon, Alt: $alt")
                 }
             }
