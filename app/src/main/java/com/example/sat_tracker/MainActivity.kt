@@ -19,6 +19,12 @@ import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.Priority
 import io.github.sceneview.ar.ARSceneView
+import org.orekit.data.*
+import org.orekit.time.AbsoluteDate
+import org.orekit.time.TimeScalesFactory
+import org.orekit.data.DataContext
+import java.io.File
+import java.io.FileOutputStream
 
 class MainActivity : AppCompatActivity(), SensorEventListener {
 
@@ -46,8 +52,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         // Initialize location client
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
+        // Load Orekit in Java utility class
+        OrekitInitializer.initOrekit(this)
+
+        // Now you can safely call Orekit APIs
+        val utc = TimeScalesFactory.getUTC()
+        val now = AbsoluteDate(java.util.Date(), utc)
+        Log.d("OREKIT", "Current UTC time: $now")
+
         requestLocationPermission()
     }
+
 
     override fun onResume() {
         super.onResume()
@@ -101,10 +116,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 result.lastLocation?.let { location ->
-                    Log.d("GPS", "Lat: ${location.latitude}, Lon: ${location.longitude}, Alt: ${location.altitude}")
+                    val lat = location.latitude
+                    val lon = location.longitude
+                    val alt = location.altitude
+                    Log.d("GPS", "Lat: $lat, Lon: $lon, Alt: $alt")
                 }
             }
         }
+
 
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED

@@ -16,6 +16,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+//        maven("https://jitpack.io")
 //        maven("https://github.com/SceneView/sceneview-android/maven-repo/raw/master/releases")
     }
 }
