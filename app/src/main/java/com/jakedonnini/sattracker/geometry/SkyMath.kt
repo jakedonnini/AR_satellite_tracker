@@ -8,7 +8,11 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /** A vector in the local East-North-Up frame. */
-data class Enu(val e: Double, val n: Double, val u: Double)
+data class Enu(val e: Double, val n: Double, val u: Double) {
+    val norm: Double get() = sqrt(e * e + n * n + u * u)
+    fun unit(): Enu = norm.let { Enu(e / it, n / it, u / it) }
+    infix fun dot(o: Enu): Double = e * o.e + n * o.n + u * o.u
+}
 
 /** A sky direction. Azimuth is clockwise from north, in [0, 360); elevation in [-90, 90]. */
 data class AzEl(val azimuthDeg: Double, val elevationDeg: Double)

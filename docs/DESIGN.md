@@ -24,10 +24,13 @@ The app now launches into a live camera preview with a debug HUD that shows ever
 | Satellite catalog | ✅ | CelesTrak `active` group as OMM/JSON → Room cache. **16,747** downloaded in about 15 s, of which **15,937** are LEO. 761 were above the horizon at test time. |
 | Orbit propagation | ✅ | OMM → Orekit `TLE` (field-wise constructor, so 6-digit IDs work) → SGP4 → az/el/range. Unit-tested against Orekit's own `TopocentricFrame`. |
 | GPS | ✅ | Fused location provider. First fix came from cache in under 1 s and refined to ±7 m. Permission flow fixed. |
-| Pointing | ✅ (needs calibration) | `TYPE_ROTATION_VECTOR` + WMM declination (+5.0° at the test site). Boresight elevation matched where the camera was physically aimed. Indoors, the sensor's own heading-uncertainty estimate was **±30°**, so field calibration is a must (see §6.2). |
+| Pointing | ✅ (needs outdoor validation) | Gyro-driven `GAME_ROTATION_VECTOR` with its heading pinned to the compass by a slow filter, plus WMM declination (§6.2). At rest indoors, jitter dropped from spikes of 0.42° (and 1.4° pops) in raw mode to **≤ 0.05°**, with elevation steady to ±0.01°. Azimuth still glides about ±0.5° over 30 s as the indoor magnetic field wanders. The sensor's own heading-uncertainty estimate indoors was ±30°, so outdoor validation is still needed. |
 | Camera | ✅ | CameraX preview. FOV read from Camera2 characteristics: 71.4° × 56.9°, f = 6.81 mm. |
-| Nearest satellite | ✅ (debug) | Angular separation between the boresight and every satellite above the horizon, shown in the HUD. |
-| Overlay / UI | ❌ Next | Markers, tracks and the info card come next (milestones 3–4). |
+| AR overlay | ✅ | Dots for about 780 satellites above the horizon, a horizon line and compass points, a center reticle. Positions are extrapolated with velocity every display frame. |
+| Focus + info | ✅ | The reticle picks the closest satellite within 3° (kept until 5°, with a 1° switch margin). Its dot grows and gets a name label. The info card shows altitude, range, speed, rising/setting and az/el. Checked on device: Starlink at 484 km, 7.63 km/s. |
+| Orbit path | ✅ | The focused satellite's track from −5 to +15 min at 15 s steps: past dashed, future solid with one-minute ticks, clipped at the horizon. |
+
+**Sky pass cost (Pixel 6 Pro):** a full SGP4 pass over 16k satellites takes about 1.0–1.8 s. It now runs every 20 s with a −10° mask to find candidates (about 1,600). The 2 s pass propagates only those candidates, in about 100 ms.
 
 **Startup timing to address later:** about 3 s to load Orekit, about 15 s for the first catalog download (later launches use the cache), and about 7 s to build 16k propagators. All of this runs off the main thread, but the sky isn't ready for roughly 25 s on first launch.
 
@@ -111,8 +114,10 @@ com.jakedonnini.sattracker
 ├── data/      remote TLE source, Room DB, SatelliteRepository
 ├── orbit/     Orekit init, propagation, visibility, pass prediction
 ├── sensors/   LocationTracker, AttitudeTracker
-├── ar/        projection math, camera intrinsics, overlay rendering
-└── ui/        Compose screens, SkyViewModel, theme
+├── geometry/  pure ENU / az-el math
+├── camera/    CameraX preview + field of view
+├── ar/        Projector (sky → pixels), FocusSelector
+└── ui/        SkyViewModel, SkyOverlayView, theme
 ```
 
 The pointing and projection math lives in plain Kotlin classes with no Android dependencies, so it can be unit-tested on the JVM.
@@ -124,12 +129,16 @@ SGP4 output (TEME) → ITRF → `TopocentricFrame` at the observer → azimuth (
 `s = (cos el · sin az, cos el · cos az, sin el)`.
 
 ### 6.2 Where the phone is pointing
-- `TYPE_ROTATION_VECTOR` → `SensorManager.getRotationMatrixFromVector(R)`. `R` maps device coordinates into Android's world frame (X = East, Y = **magnetic** North, Z = Up).
-- The back camera looks along device **−Z**, so the boresight in world coordinates is `b = −(R[2], R[5], R[8])`.
-  This replaces `getOrientation()`, whose pitch and roll describe the screen plane and give wrong answers once the phone is raised toward the sky.
-- **True north:** `GeomagneticField(lat, lon, alt, now).declination` gives the declination δ. Rotate the world frame about Up by δ, so azimuth_true = azimuth_mag + δ. This is 10–15° on the US East Coast, more than enough to point at the wrong satellite.
-- Boresight azimuth/elevation: `az = atan2(b.E, b.N)`, `el = asin(b.U)`. These are shown in a debug HUD.
-- When the magnetometer reports low accuracy (`onAccuracyChanged`), prompt the user to do a figure-8 calibration. There's also an optional manual yaw-offset nudge.
+- **Sensors.** `TYPE_GAME_ROTATION_VECTOR` (gyro + accelerometer) gives smooth orientation with exact tilt but an arbitrary yaw. `TYPE_ROTATION_VECTOR` adds the magnetometer, so it knows north, but it is noisy indoors and jumps whenever the fusion re-corrects toward the compass. On the device, raw mode showed **1.4° pops** while the phone sat still.
+- **Fusion (`sensors/HeadingFusion`).** Both frames share "up", so `R_abs ≈ Rz(ψ)·R_game`. Each compass sample gives ψ from `M = R_abs·R_gameᵀ`: `ψ = atan2(M₁₀ − M₀₁, M₀₀ + M₁₁)`. A complementary filter tracks ψ with τ = 8 s, and the output is `R = Rz(ψ)·R_game`. Motion and tilt come from the gyro; north is the time-averaged compass. With white compass noise σ, the residual heading noise is about σ·√(Δt / 2τ), roughly 0.035σ at 50 Hz.
+  - **Warm-up:** τ = 0.5 s for 3 s after start, or after the magnetometer's accuracy improves (i.e. the user calibrated), so the heading locks on quickly.
+  - **Disturbances:** a compass sample more than 15° from the estimate (walking past a fridge or car) only nudges it, with τ = 60 s. If the disagreement lasts more than 3 s, the estimate is assumed wrong and warm-up re-runs.
+  - **Tunable trade-off:** a larger τ gives more averaging of magnetic noise but corrects gyro yaw drift more slowly. Revisit after the outdoor test.
+  - **Fallback:** devices without a game rotation vector use the raw sensor. A long-press on the debug HUD toggles FUSED/RAW for A/B testing, and the HUD shows live jitter (RMS boresight wobble over the last 2 s).
+- **Frames.** `R` maps device coordinates into Android's world frame (X = East, Y = **magnetic** North, Z = Up). The back camera looks along device **−Z**, so the boresight is `b = −(R[2], R[5], R[8])`. This replaces `getOrientation()`, whose angles describe the screen plane.
+- **True north:** `GeomagneticField(lat, lon, alt, now).declination` gives δ, and azimuth_true = azimuth_mag + δ.
+- **GPS is not a jitter source:** a 50 m position error moves a satellite 500 km away by about 0.006°.
+- When the magnetometer reports low accuracy, prompt for a figure-8 calibration *(not built yet)*. A manual yaw-offset nudge is also still an option.
 
 ### 6.3 Projection to screen
 For each satellite ENU vector `s` (rotated into the magnetic world frame), convert to device coordinates: `d = Rᵀ s`.
@@ -175,7 +184,7 @@ A satellite is actually visible when it is **sunlit** (not in Earth's shadow, ch
 | Data | Library / API | Why it's the best choice |
 |---|---|---|
 | Location | Play Services **Fused Location Provider** (`play-services-location` 21.3) | Combines GNSS, Wi-Fi and cell data. A cached fix is shown immediately, then refined. `Location.altitude` is height above the WGS-84 ellipsoid, which is exactly what Orekit's `GeodeticPoint` expects. |
-| Attitude | `Sensor.TYPE_ROTATION_VECTOR` | The OS fuses gyro (fast, smooth), accelerometer (tilt) and magnetometer (absolute heading), usually on the sensor hub. Better than a hand-rolled filter, and it reports its own heading uncertainty. `GAME_ROTATION_VECTOR` was rejected because it has no magnetometer, so heading drifts with no north reference. |
+| Attitude | `TYPE_GAME_ROTATION_VECTOR` + `TYPE_ROTATION_VECTOR`, fused in `HeadingFusion` | The OS's gyro + accelerometer fusion (on the sensor hub) gives smooth motion and exact tilt. Its heading is pinned to the compass-referenced rotation vector through a slow filter, so magnetometer noise doesn't jitter the overlay (§6.2). |
 | True north | `android.hardware.GeomagneticField` | The World Magnetic Model built into Android. No dependency and no network needed. |
 | Calibration signal | `TYPE_MAGNETIC_FIELD` accuracy callbacks | Drives the "wave in a figure-8" prompt. |
 | Camera | **CameraX** 1.4 (`camera-camera2`, `-lifecycle`, `-view`) | Lifecycle-aware and handles device quirks. `Camera2CameraInfo` gives the sensor size and focal length needed for the field of view and projection. |
@@ -186,9 +195,10 @@ A satellite is actually visible when it is **sunlit** (not in Earth's shadow, ch
 
 ## 8. Performance
 
-The active LEO catalog is about 16k objects (mostly Starlink), and running SGP4 for all of them at 30 Hz is too much. The plan (the coarse pass is implemented):
-- **Coarse pass**, about every 2 s on `Dispatchers.Default`: propagate every satellite and keep those above −5° elevation (a few hundred).
-- **Fine pass** at frame rate, for candidates only. Reuse one `TLEPropagator` per satellite, created once.
+The active LEO catalog is about 16k objects (mostly Starlink), and running SGP4 for all of them at 30 Hz is too much. What's implemented:
+- **Full pass** every 20 s on `Dispatchers.Default`: the whole catalog with a −10° mask, which gives the candidate set.
+- **Snapshot pass** every 2 s: candidates only, giving topocentric position **and velocity** (−2° mask). One `TLEPropagator` per satellite, created once; one frame transform per pass.
+- **Per frame:** linear extrapolation `p + v·Δt`, which drifts less than 0.05° over 3 s (unit-tested). No SGP4 runs on the render path.
 - If profiling shows Orekit's per-call overhead is too high, interpolate positions between coarse samples, or swap in a lightweight SGP4 implementation for the hot path.
 
 ## 9. Permissions and UX
@@ -208,8 +218,8 @@ The active LEO catalog is about 16k objects (mostly Starlink), and running SGP4 
 0. ✅ **Fix the foundations.** Permission flow, wait for a GPS fix before filtering, periodic recompute.
 1. 🟡 **Pointing.** `AttitudeTracker` with rotation vector + declination, plus a debug HUD showing boresight az/el. *Done; still to do: a night-sky check against Polaris and the Moon.*
 2. ✅ **Catalog.** Room cache, LEO filter, refresh policy. *(Group tagging is deferred to the filters work.)*
-3. 🟡 **Overlay.** ✅ CameraX preview, FOV, ARCore/SceneView dropped. ⬜ Projected markers.
-4. **Interaction.** Reticle lock, tap to select, info card, orbit track.
+3. ✅ **Overlay.** CameraX preview, FOV, ARCore/SceneView dropped, projected markers, horizon.
+4. 🟡 **Interaction.** ✅ Reticle lock, info card, orbit track. ⬜ Tap to select.
 5. **Polish.** Sunlit/visible classification, filters, calibration UX, trimmed Orekit data.
 
 ## 12. Open questions for review

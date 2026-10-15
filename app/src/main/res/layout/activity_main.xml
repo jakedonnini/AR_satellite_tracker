@@ -9,15 +9,34 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Temporary debug HUD: live readout of every data source. -->
+    <com.jakedonnini.sattracker.ui.SkyOverlayView
+        android:id="@+id/skyOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Debug HUD: live readout of every data source. Tap to collapse. -->
     <TextView
         android:id="@+id/debugHud"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_margin="12dp"
-        android:background="#99000000"
+        android:background="@drawable/bg_panel"
         android:fontFamily="monospace"
         android:padding="8dp"
         android:textColor="#FFFFFF"
-        android:textSize="12sp" />
+        android:textSize="11sp" />
+
+    <!-- Details for the satellite under the reticle. -->
+    <TextView
+        android:id="@+id/infoCard"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_margin="16dp"
+        android:background="@drawable/bg_panel"
+        android:lineSpacingExtra="2dp"
+        android:padding="16dp"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:visibility="gone" />
 </FrameLayout>

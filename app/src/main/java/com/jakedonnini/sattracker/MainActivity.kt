@@ -5,43 +5,41 @@ import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.hardware.SensorManager
 import android.os.Bundle
+import android.text.SpannableStringBuilder
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
+import android.text.style.StyleSpan
+import android.graphics.Typeface
 import android.util.Log
+import android.view.View
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.core.text.inSpans
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.jakedonnini.sattracker.camera.CameraController
-import com.jakedonnini.sattracker.geometry.AzEl
-import com.jakedonnini.sattracker.geometry.SkyMath
-import com.jakedonnini.sattracker.orbit.Observer
-import com.jakedonnini.sattracker.orbit.OrekitInitializer
-import com.jakedonnini.sattracker.orbit.SkyModel
-import com.jakedonnini.sattracker.orbit.SkyPosition
 import com.jakedonnini.sattracker.sensors.AttitudeTracker
-import com.jakedonnini.sattracker.sensors.LocationTracker
-import kotlinx.coroutines.Dispatchers
+import com.jakedonnini.sattracker.ui.FocusState
+import com.jakedonnini.sattracker.ui.SkyOverlayView
+import com.jakedonnini.sattracker.ui.SkyViewModel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import org.orekit.time.AbsoluteDate
-import org.orekit.time.TimeScalesFactory
-import java.util.Date
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var previewView: PreviewView
-    private lateinit var hud: TextView
-    private lateinit var locationTracker: LocationTracker
-    private lateinit var attitudeTracker: AttitudeTracker
-    private lateinit var cameraController: CameraController
+    private val viewModel: SkyViewModel by viewModels()
 
-    @Volatile private var skyModel: SkyModel? = null
-    @Volatile private var skyPositions: List<SkyPosition> = emptyList()
+    private lateinit var previewView: PreviewView
+    private lateinit var overlay: SkyOverlayView
+    private lateinit var hud: TextView
+    private lateinit var infoCard: TextView
+    private lateinit var cameraController: CameraController
+    private var hudExpanded = true
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { onPermissionsResult() }
@@ -50,14 +48,32 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         previewView = findViewById(R.id.previewView)
+        overlay = findViewById(R.id.skyOverlay)
         hud = findViewById(R.id.debugHud)
-
-        locationTracker = LocationTracker(this)
-        attitudeTracker = AttitudeTracker(getSystemService(SENSOR_SERVICE) as SensorManager)
+        infoCard = findViewById(R.id.infoCard)
         cameraController = CameraController(this)
 
-        loadCatalog()
-        observeSensors()
+        overlay.frameSource = {
+            viewModel.attitudeTracker.attitude.value?.let { attitude ->
+                SkyOverlayView.Frame(
+                    attitude = attitude,
+                    snapshot = viewModel.snapshot.value,
+                    fov = cameraController.fov.value,
+                    focus = viewModel.focus.value,
+                )
+            }
+        }
+        overlay.onFocusChanged = viewModel::setFocus
+        hud.setOnClickListener { hudExpanded = !hudExpanded }
+        // Debug: long-press the HUD to A/B the raw compass-driven attitude against the fused one.
+        hud.setOnLongClickListener {
+            val tracker = viewModel.attitudeTracker
+            tracker.mode = if (tracker.mode == AttitudeTracker.Mode.FUSED) AttitudeTracker.Mode.RAW else AttitudeTracker.Mode.FUSED
+            Log.i(TAG, "Attitude mode → ${tracker.mode}")
+            true
+        }
+
+        observeState()
 
         if (hasPermission(Manifest.permission.CAMERA) && hasLocationPermission()) {
             onPermissionsResult()
@@ -74,22 +90,14 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        viewModel.setActive(true)
         startLocationIfPermitted()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        attitudeTracker.start()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        attitudeTracker.stop()
     }
 
     override fun onStop() {
         super.onStop()
-        locationTracker.stop()
+        viewModel.setActive(false)
+        viewModel.locationTracker.stop()
     }
 
     private fun onPermissionsResult() {
@@ -103,49 +111,22 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("MissingPermission") // checked by hasLocationPermission()
     private fun startLocationIfPermitted() {
-        if (hasLocationPermission()) locationTracker.start(mainLooper)
+        if (hasLocationPermission()) viewModel.locationTracker.start(mainLooper)
     }
 
-    private fun loadCatalog() {
-        val app = application as SatTrackerApp
-        lifecycleScope.launch {
-            skyModel = withContext(Dispatchers.IO) {
-                OrekitInitializer.init(app)
-                SkyModel(app.repository.getLeoSatellites())
-            }
-            Log.i(TAG, "Sky model ready with ${skyModel?.size} LEO satellites")
-        }
-    }
-
-    private fun observeSensors() {
+    private fun observeState() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                // Keep the true-north correction in sync with where we are.
+                launch { viewModel.focus.collect(::renderInfoCard) }
                 launch {
-                    locationTracker.location.filterNotNull().collect {
-                        attitudeTracker.updateLocation(it.latitude, it.longitude, it.altitude)
-                    }
-                }
-                // Coarse sky pass: who's above the horizon right now.
-                launch {
-                    while (true) {
-                        val sky = skyModel
-                        val loc = locationTracker.location.value
-                        if (sky != null && loc != null) {
-                            skyPositions = withContext(Dispatchers.Default) {
-                                sky.positions(
-                                    Observer(loc.latitude, loc.longitude, loc.altitude),
-                                    AbsoluteDate(Date(), TimeScalesFactory.getUTC()),
-                                    minElevationDeg = 0.0,
-                                )
-                            }
-                        }
-                        delay(SKY_REFRESH_MS)
-                    }
-                }
-                launch {
+                    var ticks = 0
                     while (true) {
                         hud.text = buildHud()
+                        if (++ticks % 10 == 0) {
+                            viewModel.attitudeTracker.attitude.value?.let {
+                                Log.d(TAG, "jitter ${it.mode} ${it.jitterDeg} az ${it.boresight.azimuthDeg} el ${it.boresight.elevationDeg}")
+                            }
+                        }
                         delay(HUD_REFRESH_MS)
                     }
                 }
@@ -153,52 +134,68 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun buildHud(): String = buildString {
-        val loc = locationTracker.location.value
-        appendLine(
-            if (loc == null) "GPS     waiting for fix…"
-            else "GPS     %.5f, %.5f  alt %.0f m  ±%.0f m".format(loc.latitude, loc.longitude, loc.altitude, loc.accuracy)
-        )
-
-        val att = attitudeTracker.attitude.value
-        when {
-            !attitudeTracker.isSupported -> appendLine("POINT   no rotation-vector sensor")
-            att == null -> appendLine("POINT   waiting for sensors…")
-            else -> {
-                appendLine("POINT   az %.1f°  el %.1f°".format(att.boresight.azimuthDeg, att.boresight.elevationDeg))
-                appendLine(
-                    "        decl %+.1f°  heading ±%s  mag %s".format(
-                        att.declinationDeg,
-                        att.headingAccuracyDeg?.let { "%.0f°".format(it) } ?: "?",
-                        accuracyLabel(att.magnetometerAccuracy),
-                    )
-                )
+    private fun renderInfoCard(focus: FocusState?) {
+        if (focus == null) {
+            infoCard.visibility = View.GONE
+            return
+        }
+        val sat = focus.satellite
+        val d = focus.details
+        infoCard.text = SpannableStringBuilder().apply {
+            inSpans(StyleSpan(Typeface.BOLD), RelativeSizeSpan(1.3f)) { append(sat.name) }
+            append("\n")
+            inSpans(ForegroundColorSpan(0xFFB0B0B0.toInt())) {
+                append("NORAD ${sat.noradId}")
+                if (sat.objectId.isNotBlank()) append("  ·  ${sat.objectId}")
+            }
+            if (d != null) {
+                append("\n\n")
+                append("Altitude  %,.0f km     Range  %,.0f km\n".format(d.altitudeKm, d.rangeKm))
+                append("Speed     %.2f km/s   %s\n".format(d.speedKmS, if (d.rising) "↑ rising" else "↓ setting"))
+                append("Az %.1f°   El %.1f°".format(d.azimuthDeg, d.elevationDeg))
             }
         }
+        infoCard.visibility = View.VISIBLE
+    }
 
-        val fov = cameraController.fov.value
+    private fun buildHud(): String = buildString {
+        val loc = viewModel.locationTracker.location.value
+        val att = viewModel.attitudeTracker.attitude.value
+        val sky = viewModel.skyModel.value
+        val snapshot = viewModel.snapshot.value
+
+        if (!hudExpanded) {
+            append("ⓘ ")
+            append(if (sky == null) "loading…" else "${snapshot?.objects?.count { it.position.u > 0 } ?: 0} sats up")
+            return@buildString
+        }
+
         appendLine(
-            if (fov == null) "CAMERA  no FOV yet"
-            else "CAMERA  FOV %.1f° × %.1f°  f=%.2f mm".format(fov.horizontalDeg, fov.verticalDeg, fov.focalLengthMm)
+            if (loc == null) "GPS     waiting for fix…"
+            else "GPS     ±%.0f m  alt %.0f m".format(loc.accuracy, loc.altitude)
         )
-
-        val sky = skyModel
-        val positions = skyPositions
-        appendLine(
-            if (sky == null) "CATALOG loading…"
-            else "CATALOG ${sky.size} LEO  |  ${positions.size} above horizon"
-        )
-
-        if (att != null && positions.isNotEmpty()) {
-            val nearest = positions.minBy { SkyMath.separationDeg(att.boresight, AzEl(it.azimuthDeg, it.elevationDeg)) }
-            val sep = SkyMath.separationDeg(att.boresight, AzEl(nearest.azimuthDeg, nearest.elevationDeg))
-            append(
-                "NEAREST %s (#%d)  %.1f° off\n        az %.1f°  el %.1f°  %.0f km".format(
-                    nearest.satellite.name, nearest.satellite.noradId, sep,
-                    nearest.azimuthDeg, nearest.elevationDeg, nearest.rangeMeters / 1000,
+        when {
+            !viewModel.attitudeTracker.isSupported -> appendLine("POINT   no rotation-vector sensor")
+            att == null -> appendLine("POINT   waiting for sensors…")
+            else -> appendLine(
+                "POINT   az %.1f°  el %.1f°  decl %+.1f°\n        heading ±%s  mag %s\n        %s  jitter %s".format(
+                    att.boresight.azimuthDeg, att.boresight.elevationDeg, att.declinationDeg,
+                    att.headingAccuracyDeg?.let { "%.0f°".format(it) } ?: "?",
+                    accuracyLabel(att.magnetometerAccuracy),
+                    att.mode,
+                    att.jitterDeg?.let { "%.3f°".format(it) } ?: "…",
                 )
             )
         }
+        val fov = cameraController.fov.value
+        appendLine(
+            if (fov == null) "CAMERA  no FOV yet"
+            else "CAMERA  FOV %.1f° × %.1f°".format(fov.horizontalDeg, fov.verticalDeg)
+        )
+        append(
+            if (sky == null) "CATALOG loading…"
+            else "CATALOG ${sky.size} LEO  |  ${snapshot?.objects?.count { it.position.u > 0 } ?: 0} above horizon"
+        )
     }
 
     private fun accuracyLabel(status: Int) = when (status) {
@@ -217,7 +214,6 @@ class MainActivity : AppCompatActivity() {
 
     private companion object {
         const val TAG = "MainActivity"
-        const val SKY_REFRESH_MS = 2000L
         const val HUD_REFRESH_MS = 200L
     }
 }

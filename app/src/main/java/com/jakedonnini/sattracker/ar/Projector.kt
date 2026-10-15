@@ -1,0 +1,77 @@
+package com.jakedonnini.sattracker.ar
+
+import com.jakedonnini.sattracker.geometry.Enu
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.sin
+import kotlin.math.tan
+
+/** A projected point in view pixels (origin top-left, y down). */
+data class ScreenPoint(val x: Float, val y: Float)
+
+/**
+ * Pinhole projection of sky directions onto the camera preview.
+ *
+ * @param rotation device→world rotation (East, magnetic North, Up), row-major 3x3, from
+ *   the rotation-vector sensor. The activity is portrait-locked, so device X = screen right
+ *   and device Y = screen up; the back camera looks along device −Z.
+ * @param declinationDeg magnetic declination, used to bring true-north vectors into the
+ *   sensor's magnetic world frame.
+ * @param focalPx focal length in view pixels (see [focalLengthPx]).
+ */
+class Projector(
+    private val rotation: FloatArray,
+    declinationDeg: Double,
+    private val viewWidth: Float,
+    private val viewHeight: Float,
+    val focalPx: Float,
+) {
+    private val cosD = cos(Math.toRadians(declinationDeg))
+    private val sinD = sin(Math.toRadians(declinationDeg))
+
+    /**
+     * Projects a direction given in the true-north ENU frame (any length).
+     * Returns null when it's behind or nearly perpendicular to the camera axis.
+     */
+    fun project(trueEnu: Enu): ScreenPoint? {
+        // True azimuth α → magnetic azimuth α − δ (rotate about Up).
+        val e = trueEnu.e * cosD - trueEnu.n * sinD
+        val n = trueEnu.n * cosD + trueEnu.e * sinD
+        val u = trueEnu.u
+
+        // Device coordinates: d = Rᵀ w.
+        val r = rotation
+        val dx = r[0] * e + r[3] * n + r[6] * u
+        val dy = r[1] * e + r[4] * n + r[7] * u
+        val dz = r[2] * e + r[5] * n + r[8] * u
+
+        val depth = -dz
+        if (depth <= MIN_DEPTH_RATIO * trueEnu.norm) return null
+        return ScreenPoint(
+            (viewWidth / 2 + focalPx * dx / depth).toFloat(),
+            (viewHeight / 2 - focalPx * dy / depth).toFloat(),
+        )
+    }
+
+    /** Radius in pixels of a cone of [angleDeg] around the view center. */
+    fun radiusPx(angleDeg: Double): Float = (focalPx * tan(Math.toRadians(angleDeg))).toFloat()
+
+    companion object {
+        /** Points more than ~84° off-axis are dropped; their projection explodes. */
+        private const val MIN_DEPTH_RATIO = 0.1
+
+        /**
+         * Focal length in view pixels for a CameraX preview shown with PreviewView's default
+         * FILL_CENTER scaling, in a portrait view.
+         *
+         * The preview stream is 4:3 (CameraX default), so in portrait the image is 3 wide × 4
+         * tall and its long side spans the sensor's long-side field of view. FILL_CENTER scales
+         * the image to cover the view, cropping the overflow.
+         */
+        fun focalLengthPx(viewWidth: Float, viewHeight: Float, sensorLongSideFovDeg: Double): Float {
+            val scale = max(viewWidth / 3f, viewHeight / 4f)
+            val imageHeight = 4f * scale
+            return (imageHeight / 2 / tan(Math.toRadians(sensorLongSideFovDeg / 2))).toFloat()
+        }
+    }
+}
