@@ -1,4 +1,4 @@
-package com.example.sat_tracker.ui.theme
+package com.jakedonnini.sattracker.ui.theme
 
 import androidx.compose.ui.graphics.Color
 

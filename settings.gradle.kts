@@ -16,10 +16,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-//        maven("https://jitpack.io")
-//        maven("https://github.com/SceneView/sceneview-android/maven-repo/raw/master/releases")
     }
 }
 
-rootProject.name = "Sat_Tracker"
+rootProject.name = "SatTracker"
 include(":app")

@@ -1,4 +1,4 @@
-package com.example.sat_tracker.ui.theme
+package com.jakedonnini.sattracker.ui.theme
 
 import android.app.Activity
 import android.os.Build
@@ -34,7 +34,7 @@ private val LightColorScheme = lightColorScheme(
 )
 
 @Composable
-fun Sat_TrackerTheme(
+fun SatTrackerTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     // Dynamic color is available on Android 12+
     dynamicColor: Boolean = true,

@@ -1,4 +1,4 @@
-package com.example.sat_tracker
+package com.jakedonnini.sattracker
 
 import org.junit.Test
 
