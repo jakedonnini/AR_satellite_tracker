@@ -17,7 +17,13 @@ object OrekitInitializer {
     private const val TAG = "OREKIT"
     private const val ASSET_DIR = "orekit-data"
 
+    @Volatile
+    private var initialized = false
+
+    /** Idempotent. Blocking (copies ~37 MB on first run), so call it off the main thread. */
+    @Synchronized
     fun init(context: Context) {
+        if (initialized) return
         try {
             val dataDir = File(context.filesDir, ASSET_DIR)
 
@@ -27,6 +33,7 @@ object OrekitInitializer {
             }
 
             DataContext.getDefault().dataProvidersManager.addProvider(DirectoryCrawler(dataDir))
+            initialized = true
             Log.d(TAG, "Orekit data loaded successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Orekit initialization failed: ${e.message}", e)

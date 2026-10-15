@@ -2,7 +2,7 @@
 
 An Android app that overlays low-Earth-orbit satellites on the live camera view. You point your phone at the sky to see what's overhead, where it's heading and what it is.
 
-> **Status:** early prototype. Satellite data fetching and SGP4 propagation work. Pointing math and the AR overlay are not built yet. See [docs/DESIGN.md](docs/DESIGN.md).
+> **Status:** early prototype. Catalog, GPS, pointing and camera all work, and a debug HUD shows them live. The AR overlay is next. See [docs/DESIGN.md](docs/DESIGN.md).
 
 ## How it works
 
@@ -16,9 +16,11 @@ An Android app that overlays low-Earth-orbit satellites on the live camera view.
 ```
 app/src/main/java/com/jakedonnini/sattracker/
 ├── MainActivity.kt
-├── data/       TLE download (CelesTrak)
-├── orbit/      Orekit setup, propagation, visibility filtering
-├── sensors/    GPS location, device orientation
+├── data/       CelesTrak OMM client, Room cache, repository
+├── orbit/      Orekit setup, OMM → TLE, SGP4 sky model
+├── geometry/   Pure pointing math (boresight, az/el, separation)
+├── camera/     CameraX preview + field of view
+├── sensors/    Fused location, rotation-vector attitude
 └── ui/         Compose theme
 app/src/main/assets/orekit-data/   Orekit reference data (leap seconds, EOP, ephemerides)
 docs/                              Design docs

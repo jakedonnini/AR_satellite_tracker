@@ -13,9 +13,25 @@ To do this, the app needs four things:
 3. **Where is the phone pointing?** Fuse the device sensors to get the camera's look direction, referenced to true north.
 4. **Draw it.** Project each satellite's direction into camera pixels and render markers, tracks and labels over the preview.
 
-## 2. Current state (verified 2026-10-15)
+## 2. Current state
 
-I reviewed every source file and built the project (`assembleDebug` and unit tests pass). Nothing has been run on a device yet, so the runtime behavior described below comes from reading the code.
+### After the data + sensor pass (verified on a Pixel 6 Pro, 2026-10-15)
+
+The app now launches into a live camera preview with a debug HUD that shows every data stream.
+
+| Area | Status | Measured on device |
+|---|---|---|
+| Satellite catalog | ✅ | CelesTrak `active` group as OMM/JSON → Room cache. **16,747** downloaded in about 15 s, of which **15,937** are LEO. 761 were above the horizon at test time. |
+| Orbit propagation | ✅ | OMM → Orekit `TLE` (field-wise constructor, so 6-digit IDs work) → SGP4 → az/el/range. Unit-tested against Orekit's own `TopocentricFrame`. |
+| GPS | ✅ | Fused location provider. First fix came from cache in under 1 s and refined to ±7 m. Permission flow fixed. |
+| Pointing | ✅ (needs calibration) | `TYPE_ROTATION_VECTOR` + WMM declination (+5.0° at the test site). Boresight elevation matched where the camera was physically aimed. Indoors, the sensor's own heading-uncertainty estimate was **±30°**, so field calibration is a must (see §6.2). |
+| Camera | ✅ | CameraX preview. FOV read from Camera2 characteristics: 71.4° × 56.9°, f = 6.81 mm. |
+| Nearest satellite | ✅ (debug) | Angular separation between the boresight and every satellite above the horizon, shown in the HUD. |
+| Overlay / UI | ❌ Next | Markers, tracks and the info card come next (milestones 3–4). |
+
+**Startup timing to address later:** about 3 s to load Orekit, about 15 s for the first catalog download (later launches use the cache), and about 7 s to build 16k propagators. All of this runs off the main thread, but the sky isn't ready for roughly 25 s on first launch.
+
+### Original review (before this work)
 
 | Area | Status | Notes |
 |---|---|---|
@@ -52,9 +68,9 @@ I reviewed every source file and built the project (`assembleDebug` and unit tes
 - Brightness / magnitude prediction (maybe in v2).
 - iOS, and accounts or cloud sync.
 
-## 4. Key decision: AR approach
+## 4. Key decision: AR approach — **decided: A (sensor AR)**
 
-This is the main thing to agree on before building.
+Decided 2026-10-15. ARCore and SceneView have been removed, and the camera now runs on CameraX.
 
 | | **A. Sensor AR (recommended)** | **B. ARCore / SceneView (current deps)** |
 |---|---|---|
@@ -130,16 +146,47 @@ Propagate the selected satellite from now until it drops below the horizon, plus
 ### 6.6 Naked-eye visible vs. merely above the horizon
 A satellite is actually visible when it is **sunlit** (not in Earth's shadow, checked with a cylindrical or conical shadow test using Orekit's Sun position) **and** the observer's sky is dark (Sun elevation < −6°). The UI marks these differently (e.g. bright vs. dim markers).
 
-## 7. Data
+## 7. Data and sensor stack (implemented)
 
-- **Source:** the CelesTrak GP API. OMM (JSON/CSV) is preferred over TLE because 5-digit catalog numbers are running out, and Orekit can parse OMM. Default groups are `stations` + `visual` + `starlink`, with an optional "all active LEO" filtered by mean motion ≥ 11.25 rev/day and eccentricity < 0.25.
-- **Cache:** Room table `satellite(norad_id PK, name, group, line1, line2 | omm_json, epoch, fetched_at)`. Refresh when the data is more than 12 h old, and don't hit CelesTrak more than once per update cycle (they rate-limit abusive clients).
+### 7.1 Where satellite data comes from
+
+| Source | Access | Fit for this app |
+|---|---|---|
+| **CelesTrak GP** ✅ chosen | Free, no account, HTTPS | The same 18 SDS elements as Space-Track, re-served with grouping. Updated about every 2 h. OMM in JSON/CSV/XML. |
+| Space-Track.org | Free account; ≤ 30 req/min, 300/h | Authoritative source, but its terms forbid embedding or sharing credentials, so it would need our own backend. Keep as a fallback if CelesTrak goes away. |
+| N2YO API | API key; computes positions server-side | Wrong model: we need elements to propagate locally at frame rate, not per-request positions. |
+| SatNOGS DB | Free | Good for radio-transmitter metadata later. Not a primary element source. |
+| CelesTrak SupGP | Free | Operator-supplied ephemerides (e.g. Starlink), more accurate than GP. A possible v2 add-on for Starlink. |
+
+**Format: OMM JSON, not TLE.** CelesTrak ran out of 5-digit catalog numbers on 2026-07-11, and objects with 6-digit numbers **can't be expressed as TLEs at all**, so the old Starlink TLE fetch was already missing new satellites. OMM also keeps more precision (e.g. eccentricity 0.00067162 vs. 0.0006716 in TLE). Orekit has no CelesTrak-JSON parser, so `orbit/Satellite.kt` builds `TLE` objects with Orekit's field-wise constructor. It never formats a TLE line, so 6-digit numbers propagate fine (unit-tested).
+
+**Query:** a single `GET gp.php?GROUP=active&FORMAT=JSON` (about 16.7k objects, streamed straight from the socket into kotlinx.serialization). `active` is a superset of `starlink`, `stations`, `visual` and so on, and CelesTrak asks clients not to fetch both. LEO filtering happens locally in SQL.
+
+### 7.2 Cache and fast retrieval
+
+- **Room (SQLite)** table `satellite`, with one column per OMM field and an index on `meanMotion`. LEO = `meanMotion >= 11.25 AND eccentricity < 0.25`, filtered in SQL.
+- A `catalog_fetch` table records when the data was last downloaded. The repository refreshes only if the data is **more than 12 h old**, and **never more often than every 2 h**, to match CelesTrak's update cadence. Before that, repeat downloads get HTTP 403, and more than 50 errors in 2 h gets the IP firewalled. The client never retries and doesn't follow redirects. A failure falls back to the cache, so the app works offline.
+- The catalog is swapped in a single transaction, so readers never see a half-written one.
+- **The hot path never touches the DB.** On launch, the LEO rows are loaded once into `SkyModel`, which keeps one `TLEPropagator` per satellite in memory. Each 2 s sky pass computes the TEME→topocentric transform once and applies it to every satellite, instead of once per satellite.
+- Later: a WorkManager job to refresh in the background (needs a network connection, every 12 h), so launches never wait on the network.
+
+### 7.3 Sensor libraries
+
+| Data | Library / API | Why it's the best choice |
+|---|---|---|
+| Location | Play Services **Fused Location Provider** (`play-services-location` 21.3) | Combines GNSS, Wi-Fi and cell data. A cached fix is shown immediately, then refined. `Location.altitude` is height above the WGS-84 ellipsoid, which is exactly what Orekit's `GeodeticPoint` expects. |
+| Attitude | `Sensor.TYPE_ROTATION_VECTOR` | The OS fuses gyro (fast, smooth), accelerometer (tilt) and magnetometer (absolute heading), usually on the sensor hub. Better than a hand-rolled filter, and it reports its own heading uncertainty. `GAME_ROTATION_VECTOR` was rejected because it has no magnetometer, so heading drifts with no north reference. |
+| True north | `android.hardware.GeomagneticField` | The World Magnetic Model built into Android. No dependency and no network needed. |
+| Calibration signal | `TYPE_MAGNETIC_FIELD` accuracy callbacks | Drives the "wave in a figure-8" prompt. |
+| Camera | **CameraX** 1.4 (`camera-camera2`, `-lifecycle`, `-view`) | Lifecycle-aware and handles device quirks. `Camera2CameraInfo` gives the sensor size and focal length needed for the field of view and projection. |
+| Network | OkHttp 4.12 + kotlinx.serialization | Streaming JSON decoding of a multi-MB response. Retrofit would be overkill for one endpoint. |
+
 - **Extra metadata (optional, v2):** SATCAT gives owner, launch date and object type for the info card.
 - **Orekit data:** the 37 MB bundle includes MSAFE, space weather, gravity potential and tide files that SGP4 doesn't need. Keep UTC-TAI, EOP and an ephemeris for the Sun, which cuts the bundle to about 16 MB. A further option is to replace DE-440 with an analytic Sun model.
 
 ## 8. Performance
 
-Starlink alone is about 9k objects, and running SGP4 for all of them at 30 Hz is too much. The plan:
+The active LEO catalog is about 16k objects (mostly Starlink), and running SGP4 for all of them at 30 Hz is too much. The plan (the coarse pass is implemented):
 - **Coarse pass**, about every 2 s on `Dispatchers.Default`: propagate every satellite and keep those above −5° elevation (a few hundred).
 - **Fine pass** at frame rate, for candidates only. Reuse one `TLEPropagator` per satellite, created once.
 - If profiling shows Orekit's per-call overhead is too high, interpolate positions between coarse samples, or swap in a lightweight SGP4 implementation for the hot path.
@@ -158,17 +205,17 @@ Starlink alone is about 9k objects, and running SGP4 for all of them at 30 Hz is
 
 ## 11. Milestones
 
-0. **Fix the foundations.** Permission flow, wait for a GPS fix before filtering, periodic recompute.
-1. **Pointing.** `AttitudeTracker` with rotation vector + declination, plus a debug HUD showing boresight az/el, validated against Polaris and the Moon.
-2. **Catalog.** Room cache, groups, LEO filter, refresh policy.
-3. **Overlay.** CameraX preview, intrinsics, projected markers. Drop ARCore and SceneView.
+0. ✅ **Fix the foundations.** Permission flow, wait for a GPS fix before filtering, periodic recompute.
+1. 🟡 **Pointing.** `AttitudeTracker` with rotation vector + declination, plus a debug HUD showing boresight az/el. *Done; still to do: a night-sky check against Polaris and the Moon.*
+2. ✅ **Catalog.** Room cache, LEO filter, refresh policy. *(Group tagging is deferred to the filters work.)*
+3. 🟡 **Overlay.** ✅ CameraX preview, FOV, ARCore/SceneView dropped. ⬜ Projected markers.
 4. **Interaction.** Reticle lock, tap to select, info card, orbit track.
 5. **Polish.** Sunlit/visible classification, filters, calibration UX, trimmed Orekit data.
 
 ## 12. Open questions for review
 
-1. **AR approach:** OK to go with sensor AR (A) and drop ARCore/SceneView?
-2. **Satellite set:** curated groups (stations, visual, Starlink) by default, or all active LEO?
+1. ~~**AR approach**~~ — decided: sensor AR with CameraX.
+2. **Satellite set:** we now cache all active LEO (about 16k). Should the default *view* be filtered to curated groups (stations, visual, Starlink)?
 3. **What to show:** everything above the horizon, or only naked-eye-visible satellites by default?
 4. **Orekit:** keep it, given its 37 MB of data and heavy API, or switch to a small SGP4 library plus an analytic Sun model?
 5. **Package/app ID:** is `com.jakedonnini.sattracker` fine?
