@@ -1,3 +1,4 @@
 <resources>
-    <string name="app_name">Sat_Tracker</string>
+    <string name="app_name">Sat Tracker</string>
+    <string name="clear_selection">Clear selection (%1$d)</string>
 </resources>

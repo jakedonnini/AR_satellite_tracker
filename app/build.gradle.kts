@@ -2,14 +2,16 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
 }
 
 android {
-    namespace = "com.example.sat_tracker"
+    namespace = "com.jakedonnini.sattracker"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example.sat_tracker"
+        applicationId = "com.jakedonnini.sattracker"
         minSdk = 24
         targetSdk = 35
         versionCode = 1
@@ -43,6 +45,8 @@ dependencies {
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
+    implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)
@@ -50,19 +54,26 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
 
-    // ✅ ARCore (Sceneform removed from MavenCentral, use ARCore directly)
-    implementation("com.google.ar:core:1.49.0")
+    implementation(libs.androidx.appcompat)
+    implementation(libs.kotlinx.coroutines.android)
 
-    // ✅ Google Play Services Location (GPS)
-    implementation("com.google.android.gms:play-services-location:21.3.0")
+    // Location
+    implementation(libs.play.services.location)
 
-    // ✅ Optional: Coroutines (if you want to async/await location/sensor work)
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-    implementation("io.github.sceneview:arsceneview:2.3.0")
-    implementation(libs.androidx.appcompat.v161)
-    implementation("org.orekit:orekit:13.0.2")
-    implementation("org.hipparchus:hipparchus-core:3.0")
+    // Camera preview + lens characteristics
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
 
+    // Satellite catalog: network + local cache
+    implementation(libs.okhttp)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
+
+    // Orbit propagation (pulls in Hipparchus transitively)
+    implementation(libs.orekit)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
