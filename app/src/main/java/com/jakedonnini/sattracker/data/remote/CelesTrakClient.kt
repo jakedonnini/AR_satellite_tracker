@@ -7,7 +7,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.FilterInputStream
 import java.io.IOException
+import java.io.InputStream
 import java.util.concurrent.TimeUnit
 
 /**
@@ -20,8 +22,15 @@ import java.util.concurrent.TimeUnit
 class CelesTrakClient(
     private val http: OkHttpClient = defaultHttpClient(),
 ) {
+    /**
+     * @param onProgress bytes read so far and the total if the server sent a Content-Length
+     *   (CelesTrak usually streams, so expect null).
+     */
     @OptIn(ExperimentalSerializationApi::class)
-    suspend fun fetchGroup(group: String): List<OmmRecord> = withContext(Dispatchers.IO) {
+    suspend fun fetchGroup(
+        group: String,
+        onProgress: (bytesRead: Long, totalBytes: Long?) -> Unit = { _, _ -> },
+    ): List<OmmRecord> = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url("$BASE_URL?GROUP=$group&FORMAT=JSON")
             .header("User-Agent", USER_AGENT)
@@ -30,7 +39,10 @@ class CelesTrakClient(
             if (response.code != 200) {
                 throw CelesTrakException(response.code, "GROUP=$group returned HTTP ${response.code}")
             }
-            json.decodeFromStream<List<OmmRecord>>(response.body!!.byteStream())
+            val body = response.body!!
+            val total = body.contentLength().takeIf { it > 0 }
+            val stream = CountingInputStream(body.byteStream()) { onProgress(it, total) }
+            json.decodeFromStream<List<OmmRecord>>(stream)
         }
     }
 
@@ -49,3 +61,25 @@ class CelesTrakClient(
 }
 
 class CelesTrakException(val httpCode: Int, message: String) : IOException(message)
+
+/** Reports the running byte count, throttled to every 64 KiB. */
+private class CountingInputStream(
+    input: InputStream,
+    private val onCount: (Long) -> Unit,
+) : FilterInputStream(input) {
+    private var count = 0L
+    private var lastReported = 0L
+
+    override fun read(): Int = super.read().also { if (it >= 0) advance(1) }
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int =
+        super.read(b, off, len).also { if (it > 0) advance(it.toLong()) }
+
+    private fun advance(n: Long) {
+        count += n
+        if (count - lastReported >= 64 * 1024) {
+            lastReported = count
+            onCount(count)
+        }
+    }
+}

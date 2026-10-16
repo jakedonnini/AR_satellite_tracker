@@ -62,5 +62,8 @@ dependencies {
     // Orbit propagation (pulls in Hipparchus transitively)
     implementation(libs.orekit)
 
+    // Globe screen: serves the bundled globe.gl page to a WebView
+    implementation(libs.androidx.webkit)
+
     testImplementation(libs.junit)
 }

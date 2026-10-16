@@ -1,4 +1,8 @@
 <resources>
     <string name="app_name">Sat Tracker</string>
     <string name="clear_selection">Clear selection (%1$d)</string>
+    <string name="open_globe">🌐 Globe</string>
+    <string name="open_ar">Open AR camera</string>
+    <string name="center_on_me">⌖ Me</string>
+    <string name="globe_title">%1$,d LEO satellites · drag to rotate, pinch to zoom</string>
 </resources>

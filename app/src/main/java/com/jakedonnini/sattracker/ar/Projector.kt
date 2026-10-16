@@ -83,6 +83,42 @@ class Projector(
          * tall and its long side spans the sensor's long-side field of view. FILL_CENTER scales
          * the image to cover the view, cropping the overflow.
          */
+        /**
+         * The camera's view as five unit directions in the **true-north** ENU frame: the
+         * boresight, then the four corners of the visible preview (top-left, top-right,
+         * bottom-right, bottom-left). Uses the same intrinsics as [project], so the globe's
+         * view pyramid matches exactly what the AR screen shows.
+         */
+        fun viewDirections(
+            rotation: FloatArray,
+            declinationDeg: Double,
+            viewWidth: Float,
+            viewHeight: Float,
+            sensorLongSideFovDeg: Double,
+        ): List<Enu> {
+            val f = focalLengthPx(viewWidth, viewHeight, sensorLongSideFovDeg).toDouble()
+            val tx = viewWidth / 2 / f
+            val ty = viewHeight / 2 / f
+            val cosD = cos(Math.toRadians(declinationDeg))
+            val sinD = sin(Math.toRadians(declinationDeg))
+            // Device frame: x = screen right, y = screen up, camera looks along −z.
+            val device = listOf(
+                doubleArrayOf(0.0, 0.0, -1.0),
+                doubleArrayOf(-tx, ty, -1.0),
+                doubleArrayOf(tx, ty, -1.0),
+                doubleArrayOf(tx, -ty, -1.0),
+                doubleArrayOf(-tx, -ty, -1.0),
+            )
+            return device.map { d ->
+                val r = rotation
+                val em = r[0] * d[0] + r[1] * d[1] + r[2] * d[2]
+                val nm = r[3] * d[0] + r[4] * d[1] + r[5] * d[2]
+                val u = r[6] * d[0] + r[7] * d[1] + r[8] * d[2]
+                // Magnetic → true north: inverse of the rotation in [project].
+                Enu(em * cosD + nm * sinD, nm * cosD - em * sinD, u).unit()
+            }
+        }
+
         fun focalLengthPx(viewWidth: Float, viewHeight: Float, sensorLongSideFovDeg: Double): Float {
             val scale = max(viewWidth / 3f, viewHeight / 4f)
             val imageHeight = 4f * scale

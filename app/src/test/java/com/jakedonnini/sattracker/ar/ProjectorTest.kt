@@ -57,6 +57,28 @@ class ProjectorTest {
     }
 
     @Test
+    fun `view directions are the boresight and the four visible corners`() {
+        val decl = 7.0
+        val longFov = 71.4
+        val dirs = Projector.viewDirections(facingNorth, decl, 1440f, 3120f, longFov)
+        assertEquals(5, dirs.size)
+
+        // Boresight: magnetic north = true azimuth equal to the declination.
+        val bore = SkyMath.toAzEl(dirs[0])
+        assertEquals(decl, bore.azimuthDeg, 1e-4)
+        assertEquals(0.0, bore.elevationDeg, 1e-4)
+
+        // Each corner projects back onto the matching view corner.
+        val p = Projector(facingNorth, decl, 1440f, 3120f, Projector.focalLengthPx(1440f, 3120f, longFov))
+        val expected = listOf(0f to 0f, 1440f to 0f, 1440f to 3120f, 0f to 3120f)
+        expected.forEachIndexed { i, (x, y) ->
+            val sp = p.project(dirs[i + 1])!!
+            assertEquals("corner $i x", x, sp.x, 0.5f)
+            assertEquals("corner $i y", y, sp.y, 0.5f)
+        }
+    }
+
+    @Test
     fun `reticle radius matches the angle`() {
         assertEquals(f * tan(Math.toRadians(3.0)).toFloat(), projector().radiusPx(3.0), 1e-3f)
     }
