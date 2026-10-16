@@ -59,6 +59,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var loadingLabel: TextView
     private lateinit var loadingBar: ProgressBar
     private lateinit var openArButton: Button
+    private lateinit var centerOnMeButton: Button
 
     /** On the AR screen, Back returns to the globe instead of leaving the app. */
     private val backToGlobe = object : OnBackPressedCallback(false) {
@@ -84,6 +85,7 @@ class MainActivity : AppCompatActivity() {
         loadingLabel = findViewById(R.id.loadingLabel)
         loadingBar = findViewById(R.id.loadingBar)
         openArButton = findViewById(R.id.openAr)
+        centerOnMeButton = findViewById(R.id.centerOnMe)
 
         globe = GlobeController(
             findViewById<WebView>(R.id.globeWebView),
@@ -92,7 +94,7 @@ class MainActivity : AppCompatActivity() {
         ).also { it.start() }
         openArButton.setOnClickListener { viewModel.showScreen(Screen.AR) }
         findViewById<Button>(R.id.openGlobe).setOnClickListener { viewModel.showScreen(Screen.GLOBE) }
-        findViewById<Button>(R.id.centerOnMe).setOnClickListener { globe.flyToUser() }
+        centerOnMeButton.setOnClickListener { globe.flyToUser() }
         onBackPressedDispatcher.addCallback(this, backToGlobe)
 
         overlay.frameSource = {
@@ -182,6 +184,7 @@ class MainActivity : AppCompatActivity() {
         val ready = state.done && state.error == null
         loadingPanel.visibility = if (ready) View.GONE else View.VISIBLE
         openArButton.visibility = if (state.done) View.VISIBLE else View.GONE
+        centerOnMeButton.visibility = if (ready) View.VISIBLE else View.GONE
         globeTitle.visibility = if (ready) View.VISIBLE else View.GONE
         viewModel.skyModel.value?.let { globeTitle.text = getString(R.string.globe_title, it.size) }
     }

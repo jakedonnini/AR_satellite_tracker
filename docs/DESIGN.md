@@ -30,7 +30,7 @@ The app now launches into a live camera preview with a debug HUD that shows ever
 | Focus + info | ✅ | The reticle picks the closest satellite within 3° (kept until 5°, with a 1° switch margin). Its dot grows and gets a name label. The info card shows altitude, range, speed, rising/setting and az/el. Checked on device: Starlink at 484 km, 7.63 km/s. |
 | Orbit path | ✅ | The focused satellite's track from −5 to +15 min at 15 s steps: past dashed, future solid with one-minute ticks, clipped at the horizon. |
 | Lock + track | ✅ | Tapping a marker (36 dp hit radius) locks it; tapping again releases it. Each locked satellite gets one of 6 colors that stay distinct from the amber focus color, and keeps its dot, label and orbit path in that color while you pan around. Off-screen or behind-camera locks show a colored edge arrow pointing the way to turn (dimmed with "below horizon" once it sets). A translucent "Clear selection (N)" button appears while anything is locked. The info card shows the focused satellite, or else the most recently locked one. Confirmed on device by locking two satellites and panning away. |
-| Globe screen | ✅ | Opens on a globe.gl Earth with every LEO satellite, the user's marker, the live camera-view pyramid with in-view satellites highlighted, and locked satellites with labels and one-period orbit paths. A weighted loading bar becomes **Open AR camera**; **🌐 Globe** (top right on the AR screen) or Back returns to it. Checked in a desktop browser with synthetic orbits (`tools/globe/dev-server.mjs`): 60 fps with 16k points, no console errors, Earth texture aligned (marker at the right place). On the Pixel 6 Pro: confirmed working by the user, no JS errors or WebGL warnings, and a full Earth-fixed pass over 15,942 satellites takes about 0.5–0.8 s every 5 s. |
+| Globe screen | ✅ | Opens on a globe.gl Earth with every LEO satellite, the user's marker, the live camera-view pyramid with in-view satellites highlighted, and locked satellites with labels and one-period orbit paths. A weighted loading bar becomes the **📷 AR camera** toggle, which sits bottom-center on both screens (🌐 Globe in AR), and Back also returns to the globe. Top-right holds the screen's action (⌖ Center on me / ✕ Clear). A rippling wall of light (standing on the ground circle of a 40° cone from Earth's center through the user) marks how far out LEO satellites can be seen, there are three satellite tiers (dim / above horizon / in camera view), and the camera pyramid fades out along its length. Checked in a desktop browser with synthetic orbits (`tools/globe/dev-server.mjs`): 60 fps with 16k points, no console errors, Earth texture aligned (marker at the right place). On the Pixel 6 Pro: confirmed working by the user, no JS errors or WebGL warnings, and a full Earth-fixed pass over 15,942 satellites takes about 0.5–0.8 s every 5 s. |
 
 **Sky pass cost (Pixel 6 Pro):** a full SGP4 pass over 16k satellites takes about 1.0–1.8 s. It now runs every 20 s with a −10° mask to find candidates (about 1,600). The 2 s pass propagates only those candidates, in about 100 ms.
 
@@ -222,14 +222,20 @@ The active LEO catalog is about 16k objects (mostly Starlink), and running SGP4 
 ### 11.1 What the user sees
 
 1. **App launch → Globe screen.** A 3D Earth on a star field. You can rotate it with one finger and zoom with a pinch. It opens looking at the user's location.
-2. **The user** is a marker on the surface at their GPS position. Their **camera's view** is a translucent pyramid rising from that point. It has the same horizontal and vertical field of view as the camera preview, it follows the phone's live pointing direction, and it reaches out to 2,500 km (past the range of LEO satellites near the horizon). Strictly it's a rectangular frustum rather than a round cone, so it shows *exactly* which satellites the AR screen would show.
-3. **Loading bar** at the bottom, with a stage label, tracking the startup pipeline (§11.4).
-4. **When loading finishes:**
-   - **Every satellite appears.** That's the whole LEO catalog (about 16k), not just the ones in view, as dim points at their real positions.
-   - **Satellites in view are highlighted.** Those inside the camera pyramid and above the user's horizon are bright.
+2. **The user** is a marker on the surface at their GPS position. Their **camera's view** is a translucent pyramid rising from that point. It has the same horizontal and vertical field of view as the camera preview, it follows the phone's live pointing direction, and it reaches out to 2,500 km (past the range of LEO satellites near the horizon). Strictly it's a rectangular frustum rather than a round cone, so it shows *exactly* which satellites the AR screen would show. Its faces and edges **fade out** along its length (per-vertex alpha across 5 rings), so it has no hard far end.
+3. **The visibility wall** is a ring of light standing on the ground around the user.
+   - **Where it stands:** take a cone from Earth's center through the user's GPS position with half-angle `acos(R / (R + h))`. The cone's base, projected onto the surface, is the circle beneath which a satellite at altitude *h* sits exactly on the user's horizon. With h = 2,000 km (the top of LEO) that's about 40°, a circle roughly 4,500 km across. No LEO satellite outside the wall can be seen from the user. Satellites inside it may still be below the horizon if they're low; the cyan tier shows exactly which are up.
+   - **How it looks:** the wall rises radially from that circle with a bright foot line on the ground, fades toward space, and its top edge ripples with waves travelling around the circumference (a time-animated fragment shader with additive blending).
+   - **Tuning:** `WALL_ALT_KM` in `globe.js` sets *h*; 550 km (the main Starlink shell) would give about a 22° circle.
+4. **Loading bar** at the bottom, with a stage label, tracking the startup pipeline (§11.4).
+5. **When loading finishes:**
+   - **Every satellite appears.** That's the whole LEO catalog (about 16k), not just the ones in view, drawn in three tiers: dim (not visible from the user), cyan (above the user's horizon), yellow (inside the camera's view).
    - **Locked satellites** (from the AR screen) show in their lock color, larger, with a name label and their orbit path.
-   - **The loading bar becomes a button: "Open AR camera".**
-5. **AR screen:** a new **globe button in the top right** returns to the globe. Locks are shared both ways because both screens read the same `SkyViewModel`.
+   - **The loading bar becomes the "📷 AR camera" toggle**, and **"⌖ Center on me"** appears in the top right.
+6. **Shared layout, no overlaps.** Both screens use the same scheme:
+   - **Top row:** an info panel on the left takes the remaining width (the satellite count on the globe, the debug HUD in AR), and the screen's action is on the right ("⌖ Center on me" / "✕ Clear (N)").
+   - **Bottom stack:** details or loading, then the **screen toggle**, in the same spot, size and style on both screens ("📷 AR camera" / "🌐 Globe").
+   - Locks are shared both ways because both screens read the same `SkyViewModel`.
 
 ### 11.2 Rendering: globe.gl in a WebView
 
@@ -266,7 +272,7 @@ locked satellites         ──(on lock / every 60 s)───────▶  
 | Building propagators | 30% | Satellites processed / total |
 | First globe positions | 10% | Completion of the first full ECEF pass |
 
-`SkyViewModel.loading: StateFlow<LoadingState(stage, fraction, done)>` drives a native `ProgressBar` and label. When `done`, they're replaced by the **Open AR camera** button.
+`SkyViewModel.loading: StateFlow<LoadingState(stage, fraction, done)>` drives a native `ProgressBar` and label. When `done`, they're replaced by the **📷 AR camera** toggle, and **⌖ Center on me** appears top-right.
 
 ### 11.5 Navigation and lifecycle
 

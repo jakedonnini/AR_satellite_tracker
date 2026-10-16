@@ -1,4 +1,6 @@
-// Globe screen: Earth, every LEO satellite, the user's camera view pyramid and locked satellites.
+// Globe screen: Earth, every LEO satellite, the user's visibility wall and camera view pyramid, and
+// locked satellites. Satellites are drawn in three tiers: dim (not visible from the user), cyan
+// (above the user's horizon), yellow (inside the camera's view).
 //
 // Data comes from the app:
 //   GET /api/catalog    → { ids: [...], names: [...] }            (once, same order as positions)
@@ -15,6 +17,7 @@
   const EARTH_KM = 6371.0;
   const S = 100 / EARTH_KM;
   const FAR_KM = 2500;           // view pyramid length; beyond any LEO satellite near the horizon
+  const LEO_TOP_KM = 2000;       // top of LEO: sizes the visibility wall
   const POLL_MS = 5000;
 
   const world = new Globe(document.getElementById('globe'), { animateIn: false })
@@ -90,6 +93,15 @@
   allPoints.frustumCulled = false;
   scene.add(allPoints);
 
+  const aboveGeom = new THREE.BufferGeometry();
+  const abovePoints = new THREE.Points(aboveGeom, new THREE.PointsMaterial({
+    size: 1.6, map: DOT, color: 0x80deea, transparent: true, depthWrite: false,
+  }));
+  abovePoints.frustumCulled = false;
+  abovePoints.renderOrder = 1;
+  abovePoints.visible = false;
+  scene.add(abovePoints);
+
   const inViewGeom = new THREE.BufferGeometry();
   const inViewPoints = new THREE.Points(inViewGeom, new THREE.PointsMaterial({
     size: 2.4, map: DOT, color: 0xffd54f, transparent: true, depthWrite: false,
@@ -100,6 +112,7 @@
   scene.add(inViewPoints);
 
   let allPos = null;
+  let abovePos = null;
   let inViewPos = null;
 
   async function loadCatalog() {
@@ -110,8 +123,11 @@
     names = cat.names;
     indexById = new Map(ids.map((id, i) => [id, i]));
     allPos = new Float32Array(ids.length * 3);
+    abovePos = new Float32Array(ids.length * 3);
     inViewPos = new Float32Array(ids.length * 3);
     allGeom.setAttribute('position', new THREE.BufferAttribute(allPos, 3));
+    aboveGeom.setAttribute('position', new THREE.BufferAttribute(abovePos, 3));
+    aboveGeom.setDrawRange(0, 0);
     inViewGeom.setAttribute('position', new THREE.BufferAttribute(inViewPos, 3));
     inViewGeom.setDrawRange(0, 0);
     return true;
@@ -147,24 +163,142 @@
   userMarker.visible = false;
   scene.add(userMarker);
 
+  // The view pyramid fades out along its length: vertex alpha goes from FADE_ALPHAS[0] at the
+  // apex to 0 at the far end, through intermediate rings so the fade isn't linear-looking.
+  const FADE_STEPS = [0, 0.15, 0.35, 0.6, 1];          // fraction of FAR_KM for each ring
+  const FADE_FACE = [0.32, 0.22, 0.12, 0.04, 0];        // face alpha at each ring
+  const FADE_EDGE = [0.95, 0.7, 0.4, 0.15, 0];          // edge alpha at each ring
+  const RINGS = FADE_STEPS.length;
+
+  function rgba(hex, alphas, perRing) {
+    const c = new THREE.Color(hex);
+    const out = new Float32Array(RINGS * perRing * 4);
+    for (let r = 0; r < RINGS; r++) {
+      for (let k = 0; k < perRing; k++) out.set([c.r, c.g, c.b, alphas[r]], (r * perRing + k) * 4);
+    }
+    return out;
+  }
+
+  // Vertices: ring r, corner k → index r*4 + k (ring 0 collapses onto the apex).
   const pyramidGeom = new THREE.BufferGeometry();
-  pyramidGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(5 * 3), 3));
-  pyramidGeom.setIndex([0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 1, 1, 2, 3, 1, 3, 4]);
+  pyramidGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(RINGS * 4 * 3), 3));
+  pyramidGeom.setAttribute('color', new THREE.BufferAttribute(rgba(0xffd54f, FADE_FACE, 4), 4));
+  const faceIdx = [];
+  for (let r = 0; r < RINGS - 1; r++) {
+    for (let k = 0; k < 4; k++) {
+      const a = r * 4 + k, b = r * 4 + (k + 1) % 4, c = (r + 1) * 4 + k, d = (r + 1) * 4 + (k + 1) % 4;
+      faceIdx.push(a, c, d, a, d, b);
+    }
+  }
+  pyramidGeom.setIndex(faceIdx);
   const pyramid = new THREE.Mesh(pyramidGeom, new THREE.MeshBasicMaterial({
-    color: 0xffd54f, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false,
+    vertexColors: true, transparent: true, side: THREE.DoubleSide, depthWrite: false,
   }));
   pyramid.frustumCulled = false;
   pyramid.visible = false;
   scene.add(pyramid);
 
+  // Edges: the four corner rays, faded the same way (no hard far rectangle).
   const edgesGeom = new THREE.BufferGeometry();
-  edgesGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(16 * 3), 3));
+  edgesGeom.setAttribute('position', pyramidGeom.attributes.position);
+  edgesGeom.setAttribute('color', new THREE.BufferAttribute(rgba(0xffd54f, FADE_EDGE, 4), 4));
+  const edgeIdx = [];
+  for (let r = 0; r < RINGS - 1; r++) for (let k = 0; k < 4; k++) edgeIdx.push(r * 4 + k, (r + 1) * 4 + k);
+  edgesGeom.setIndex(edgeIdx);
   const edges = new THREE.LineSegments(edgesGeom, new THREE.LineBasicMaterial({
-    color: 0xffd54f, transparent: true, opacity: 0.7,
+    vertexColors: true, transparent: true, depthWrite: false,
   }));
   edges.frustumCulled = false;
   edges.visible = false;
   scene.add(edges);
+
+  // Visibility wall: a ring of light standing on the ground around the user.
+  // Take a cone from Earth's center through the user with half-angle acos(R / (R + h)); its base
+  // projected onto the surface is the circle beneath which a satellite at altitude h sits exactly
+  // on the user's horizon. With h = top of LEO, no LEO satellite outside the wall can be seen.
+  // The wall rises radially from that circle, fades toward space, and its top edge ripples with
+  // waves travelling around the circumference.
+  const WALL_ALT_KM = LEO_TOP_KM;
+  const WALL_HALF_ANGLE = Math.acos(EARTH_KM / (EARTH_KM + WALL_ALT_KM));   // ≈ 40.4°
+  const WALL_HEIGHT_KM = LEO_TOP_KM;
+
+  function wallGeometry(segments, rows) {
+    // Local frame: +y is the cone axis (toward the user); built once, oriented per pose.
+    const pos = [], uv = [], idx = [];
+    const sinA = Math.sin(WALL_HALF_ANGLE), cosA = Math.cos(WALL_HALF_ANGLE);
+    for (let j = 0; j <= rows; j++) {
+      const r = (EARTH_KM + WALL_HEIGHT_KM * (j / rows)) * S;
+      for (let i = 0; i <= segments; i++) {
+        const phi = (i / segments) * Math.PI * 2;
+        pos.push(r * sinA * Math.cos(phi), r * cosA, r * sinA * Math.sin(phi));
+        uv.push(i / segments, j / rows);
+      }
+    }
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < segments; i++) {
+        const a = j * (segments + 1) + i, b = a + 1, c = a + segments + 1, d = c + 1;
+        idx.push(a, c, b, b, c, d);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setIndex(idx);
+    return g;
+  }
+
+  const wallUniforms = {
+    uTime: { value: 0 },
+    uColor: { value: new THREE.Color(0x4dd0e1) },
+  };
+  const fence = new THREE.Mesh(
+    wallGeometry(256, 32),
+    new THREE.ShaderMaterial({
+      uniforms: wallUniforms,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        varying vec2 vUv;
+        uniform float uTime;
+        uniform vec3 uColor;
+        const float TAU = 6.28318530718;
+        void main() {
+          float u = vUv.x;   // around the circle, 0..1 (wave counts are integers so it wraps)
+          float v = vUv.y;   // ground (0) → space (1)
+          // Wavy top edge: waves travelling around the ring in both directions.
+          float top = 0.72
+            + 0.10 * sin(u * TAU * 9.0 - uTime * 1.4)
+            + 0.05 * sin(u * TAU * 17.0 + uTime * 2.1);
+          float cut = 1.0 - smoothstep(top - 0.22, top, v);         // soft, rippling top
+          float body = 0.60 * pow(1.0 - v, 1.2);                    // fades toward space
+          float foot = 0.70 * exp(-v * 25.0);                       // bright line on the ground
+          float crest = 0.65 * exp(-pow((v - (top - 0.10)) / 0.035, 2.0)); // glow riding the wave
+          float a = (body + crest) * cut + foot;
+          if (a < 0.004) discard;
+          gl_FragColor = vec4(uColor * a, a);
+        }`,
+    }),
+  );
+  fence.frustumCulled = false;
+  fence.renderOrder = 1;
+  fence.visible = false;
+  scene.add(fence);
+
+  function updateFence() {
+    // Cone axis: Earth's center → the user (geocentric direction of the GPS position).
+    const o = pose.obs;
+    const axis = new THREE.Vector3(o[1], o[2], o[0]).normalize();
+    fence.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis);
+    fence.visible = true;
+  }
 
   // Inward normals of the pyramid's four side planes (relative to the observer), for the in-view test.
   let planes = null;
@@ -175,22 +309,14 @@
   function updatePyramid() {
     const o = pose.obs;
     const p = pyramidGeom.attributes.position.array;
-    setThree(p, 0, o[0], o[1], o[2]);
     const corners = pose.dirs.slice(1);
-    corners.forEach((d, i) => {
-      setThree(p, (i + 1) * 3, o[0] + d[0] * FAR_KM, o[1] + d[1] * FAR_KM, o[2] + d[2] * FAR_KM);
+    FADE_STEPS.forEach((f, r) => {
+      corners.forEach((d, k) => {
+        const len = f * FAR_KM;
+        setThree(p, (r * 4 + k) * 3, o[0] + d[0] * len, o[1] + d[1] * len, o[2] + d[2] * len);
+      });
     });
     pyramidGeom.attributes.position.needsUpdate = true;
-    pyramidGeom.computeBoundingSphere();
-
-    // Edges: apex→each corner, then the far rectangle.
-    const e = edgesGeom.attributes.position.array;
-    const pairs = [[0, 1], [0, 2], [0, 3], [0, 4], [1, 2], [2, 3], [3, 4], [4, 1]];
-    pairs.forEach(([a, b], k) => {
-      e.set(p.subarray(a * 3, a * 3 + 3), k * 6);
-      e.set(p.subarray(b * 3, b * 3 + 3), k * 6 + 3);
-    });
-    edgesGeom.attributes.position.needsUpdate = true;
 
     const bore = pose.dirs[0];
     planes = corners.map((d, i) => {
@@ -201,6 +327,7 @@
     const m = v3(o[0], o[1], o[2]);
     userMarker.position.copy(m);
     userMarker.visible = pyramid.visible = edges.visible = true;
+    updateFence();
   }
 
   // ---------- locked satellites ----------
@@ -242,13 +369,17 @@
   // ---------- per-frame update ----------
   const tmp = new THREE.Vector3();
 
+  const startMs = performance.now();
+
   function frame() {
     requestAnimationFrame(frame);
+    wallUniforms.uTime.value = (performance.now() - startMs) / 1000;
     if (!state || !allPos) return;
     const dt = (Date.now() - stateEpoch) / 1000;
     const n = ids.length;
     const o = pose ? pose.obs : null;
     const up = pose ? pose.up : null;
+    let above = 0;
     let inView = 0;
 
     for (let i = 0; i < n; i++) {
@@ -262,6 +393,8 @@
       if (planes) {
         const r = [x - o[0], y - o[1], z - o[2]];
         if (dot(r, up) <= 0) continue;                          // below the user's horizon
+        setThree(abovePos, above * 3, x, y, z);
+        above++;
         if (dot(r, r) > FAR_KM * FAR_KM) continue;              // out of range
         if (dot(r, planes[0]) < 0 || dot(r, planes[1]) < 0 ||
             dot(r, planes[2]) < 0 || dot(r, planes[3]) < 0) continue;
@@ -270,6 +403,9 @@
       }
     }
     allGeom.attributes.position.needsUpdate = true;
+    aboveGeom.setDrawRange(0, above);
+    aboveGeom.attributes.position.needsUpdate = true;
+    abovePoints.visible = above > 0;
     inViewGeom.setDrawRange(0, inView);
     inViewPoints.visible = inView > 0; // drawing an empty range makes WebGL log warnings
     inViewGeom.attributes.position.needsUpdate = true;
@@ -290,7 +426,8 @@
       pose = p;
       if (!p) {
         planes = null;
-        userMarker.visible = pyramid.visible = edges.visible = false;
+        userMarker.visible = pyramid.visible = edges.visible = fence.visible = false;
+        abovePoints.visible = false;
         inViewGeom.setDrawRange(0, 0);
         inViewPoints.visible = false;
         return;
@@ -306,6 +443,8 @@
       if (pose) world.pointOfView({ lat: pose.lat, lng: pose.lon, altitude: 1.4 }, 1000);
     },
     pause() { world.pauseAnimation(); },
+    /** The globe.gl instance, for dev tools (tools/globe/dev-server.mjs). */
+    world,
     resume() { world.resumeAnimation(); },
   };
 })();
