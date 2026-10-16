@@ -1,6 +1,5 @@
 package com.jakedonnini.sattracker.geometry
 
-import kotlin.math.acos
 import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -47,14 +46,6 @@ object SkyMath {
         val az = Math.toRadians(dir.azimuthDeg)
         val el = Math.toRadians(dir.elevationDeg)
         return Enu(cos(el) * sin(az), cos(el) * cos(az), sin(el))
-    }
-
-    /** Great-circle angle between two sky directions, in degrees. */
-    fun separationDeg(a: AzEl, b: AzEl): Double {
-        val va = toEnu(a)
-        val vb = toEnu(b)
-        val dot = va.e * vb.e + va.n * vb.n + va.u * vb.u
-        return Math.toDegrees(acos(dot.coerceIn(-1.0, 1.0)))
     }
 
     private fun normalizeDeg(deg: Double) = ((deg % 360.0) + 360.0) % 360.0

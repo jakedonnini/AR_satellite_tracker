@@ -39,9 +39,6 @@ class HeadingFusion(
     private var warmupUntilNanos = Long.MIN_VALUE
     private var outlierSinceNanos: Long? = null
 
-    /** Current yaw offset estimate in degrees (absolute minus game), or null before the first sample. */
-    val offsetDeg: Double? get() = offsetRad?.let { Math.toDegrees(it) }
-
     /** Re-enter fast convergence, e.g. after the user recalibrates the compass. */
     fun rewarm(nowNanos: Long) {
         warmupUntilNanos = nowNanos + (warmupSeconds * 1e9).toLong()

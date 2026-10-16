@@ -23,8 +23,8 @@ class SatelliteRepository(
     private val minRefreshMillis: Long = 2 * HOUR,
 ) {
     /** Returns all cached LEO satellites, refreshing from CelesTrak first if the cache is stale. */
-    suspend fun getLeoSatellites(forceRefresh: Boolean = false): List<Satellite> {
-        refreshIfNeeded(forceRefresh)
+    suspend fun getLeoSatellites(): List<Satellite> {
+        refreshIfNeeded()
         return dao.getLeo().mapNotNull { entity ->
             runCatching { entity.toOmm().toSatellite() }
                 .onFailure { Log.w(TAG, "Bad elements for ${entity.noradId}", it) }
@@ -32,11 +32,11 @@ class SatelliteRepository(
         }
     }
 
-    private suspend fun refreshIfNeeded(forceRefresh: Boolean) {
+    private suspend fun refreshIfNeeded() {
         val lastFetch = dao.getFetch(GROUP)?.fetchedAtMillis
         val age = lastFetch?.let { clock() - it } ?: Long.MAX_VALUE
         val stale = age > maxAgeMillis || dao.count() == 0
-        if (age < minRefreshMillis || !(stale || forceRefresh)) return
+        if (age < minRefreshMillis || !stale) return
 
         try {
             val records = client.fetchGroup(GROUP)

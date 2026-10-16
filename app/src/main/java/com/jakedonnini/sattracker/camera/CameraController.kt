@@ -22,7 +22,7 @@ import kotlin.math.atan
  * Field of view of the back camera's full sensor, in the sensor's native landscape
  * orientation. In portrait, the screen's vertical FOV corresponds to [horizontalDeg].
  */
-data class CameraFov(val horizontalDeg: Double, val verticalDeg: Double, val focalLengthMm: Float)
+data class CameraFov(val horizontalDeg: Double, val verticalDeg: Double)
 
 /**
  * Shows the back camera in a [PreviewView] via CameraX and reports the lens field of view,
@@ -59,7 +59,7 @@ class CameraController(private val context: Context) {
             ?.firstOrNull()
         if (sensorSize == null || focal == null) return null
         fun fovDeg(size: Float) = Math.toDegrees(2 * atan(size / (2.0 * focal)))
-        return CameraFov(fovDeg(sensorSize.width), fovDeg(sensorSize.height), focal)
+        return CameraFov(fovDeg(sensorSize.width), fovDeg(sensorSize.height))
     }
 
     private companion object {
