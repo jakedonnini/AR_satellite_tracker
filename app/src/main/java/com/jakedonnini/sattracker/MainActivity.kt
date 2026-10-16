@@ -28,6 +28,8 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.jakedonnini.sattracker.ar.Projector
 import com.jakedonnini.sattracker.camera.CameraController
+import com.jakedonnini.sattracker.orbit.NakedEye
+import com.jakedonnini.sattracker.orbit.Visibility
 import com.jakedonnini.sattracker.sensors.AttitudeTracker
 import com.jakedonnini.sattracker.ui.GlobeController
 import com.jakedonnini.sattracker.ui.LoadingState
@@ -186,7 +188,18 @@ class MainActivity : AppCompatActivity() {
         openArButton.visibility = if (state.done) View.VISIBLE else View.GONE
         centerOnMeButton.visibility = if (ready) View.VISIBLE else View.GONE
         globeTitle.visibility = if (ready) View.VISIBLE else View.GONE
-        viewModel.skyModel.value?.let { globeTitle.text = getString(R.string.globe_title, it.size) }
+        viewModel.skyModel.value?.let { sky ->
+            // Title plus a colour legend for the likely-visible tiers (design doc §12.3).
+            globeTitle.text = SpannableStringBuilder().apply {
+                append(getString(R.string.globe_title, sky.size))
+                append("\n")
+                inSpans(ForegroundColorSpan(SkyOverlayView.VISIBLE_COLOR)) { append("● ") }
+                inSpans(RelativeSizeSpan(0.9f)) { append(getString(R.string.legend_visible)) }
+                append("\n")
+                inSpans(ForegroundColorSpan(SkyOverlayView.VISIBLE_IN_VIEW_COLOR)) { append("● ") }
+                inSpans(RelativeSizeSpan(0.9f)) { append(getString(R.string.legend_visible_in_view)) }
+            }
+        }
     }
 
     /** Sends the user's position and live camera view to the globe (~10 Hz while it's showing). */
@@ -283,7 +296,16 @@ class MainActivity : AppCompatActivity() {
                 append("\n\n")
                 append("Altitude  %,.0f km     Range  %,.0f km\n".format(d.altitudeKm, d.rangeKm))
                 append("Speed     %.2f km/s   %s\n".format(d.speedKmS, if (d.rising) "↑ rising" else "↓ setting"))
-                append("Az %.1f°   El %.1f°".format(d.azimuthDeg, d.elevationDeg))
+                append("Az %.1f°   El %.1f°\n".format(d.azimuthDeg, d.elevationDeg))
+                val v = d.visibility
+                val (text, tint) = when (v.status) {
+                    NakedEye.LIKELY_VISIBLE -> "👁 Likely visible · mag %.1f".format(v.magnitude) to SkyOverlayView.VISIBLE_COLOR
+                    NakedEye.TOO_FAINT -> "Too faint to see · mag %.1f".format(v.magnitude) to 0xFFB0B0B0.toInt()
+                    NakedEye.IN_SHADOW -> "In Earth's shadow" to 0xFFB0B0B0.toInt()
+                    NakedEye.SKY_TOO_BRIGHT -> "Sky too bright (Sun %+.0f°)".format(v.observerSunElevationDeg) to 0xFFB0B0B0.toInt()
+                    NakedEye.TOO_LOW -> "Too low to see (below 10°)" to 0xFFB0B0B0.toInt()
+                }
+                inSpans(ForegroundColorSpan(tint), StyleSpan(Typeface.BOLD)) { append(text) }
             }
             append("\n")
             inSpans(ForegroundColorSpan(0xFF909090.toInt()), RelativeSizeSpan(0.85f)) {
@@ -321,6 +343,9 @@ class MainActivity : AppCompatActivity() {
                     att.jitterDeg?.let { "%.3f°".format(it) } ?: "…",
                 )
             )
+        }
+        snapshot?.let {
+            appendLine("SUN     el %+.1f°  %s".format(it.sunElevationDeg, Visibility.skyCondition(it.sunElevationDeg).label))
         }
         val fov = cameraController.fov.value
         appendLine(

@@ -31,6 +31,7 @@ The app now launches into a live camera preview with a debug HUD that shows ever
 | Orbit path | ✅ | The focused satellite's track from −5 to +15 min at 15 s steps: past dashed, future solid with one-minute ticks, clipped at the horizon. |
 | Lock + track | ✅ | Tapping a marker (36 dp hit radius) locks it; tapping again releases it. Each locked satellite gets one of 6 colors that stay distinct from the amber focus color, and keeps its dot, label and orbit path in that color while you pan around. Off-screen or behind-camera locks show a colored edge arrow pointing the way to turn (dimmed with "below horizon" once it sets). A translucent "Clear selection (N)" button appears while anything is locked. The info card shows the focused satellite, or else the most recently locked one. Confirmed on device by locking two satellites and panning away. |
 | Globe screen | ✅ | Opens on a globe.gl Earth with every LEO satellite, the user's marker, the live camera-view pyramid with in-view satellites highlighted, and locked satellites with labels and one-period orbit paths. A weighted loading bar becomes the **📷 AR camera** toggle, which sits bottom-center on both screens (🌐 Globe in AR), and Back also returns to the globe. Top-right holds the screen's action (⌖ Center on me / ✕ Clear). A rippling wall of light (standing on the ground circle of a 40° cone from Earth's center through the user) marks how far out LEO satellites can be seen, there are three satellite tiers (dim / above horizon / in camera view), and the camera pyramid fades out along its length. Checked in a desktop browser with synthetic orbits (`tools/globe/dev-server.mjs`): 60 fps with 16k points, no console errors, Earth texture aligned (marker at the right place). On the Pixel 6 Pro: confirmed working by the user, no JS errors or WebGL warnings, and a full Earth-fixed pass over 15,942 satellites takes about 0.5–0.8 s every 5 s. |
+| Naked-eye visibility | 🟡 Built, awaiting field test | Sun from Orekit (DE-440), checked against the June 2026 solstice declination. Each satellite gets a cylindrical-shadow test and a magnitude estimate. AR: green dots for satellites passing all four §12 criteria, plus a visibility line on the info card and the Sun's elevation and sky state in the HUD. Globe: day/night texture blend by the real Sun and a faint green twilight wash. Golden-zone satellites (sunlit over ground past civil twilight) are green, or orange when also in the camera view, with a legend top-left. Next: compare against Heavens-Above on a clear evening. |
 
 **Sky pass cost (Pixel 6 Pro):** a full SGP4 pass over 16k satellites takes about 1.0–1.8 s. It now runs every 20 s with a −10° mask to find candidates (about 1,600). The 2 s pass propagates only those candidates, in about 100 ms.
 
@@ -289,17 +290,75 @@ locked satellites         ──(on lock / every 60 s)───────▶  
 - Tapping satellites on the globe to lock them. The bridge could support it later; for now, locking happens on the AR screen.
 - MEO/GEO objects. The catalog is still filtered to LEO (§3).
 
-## 12. Milestones
+## 12. Naked-eye visibility
+
+*Proposed and implemented 2026-10-16 on the `satellite-visibility` branch.*
+
+### 12.1 Criteria
+
+A satellite can be seen with the naked eye when **all** of these hold:
+
+| # | Condition | Why | Threshold used |
+|---|---|---|---|
+| 1 | **The satellite is sunlit** | It only shines by reflected sunlight. In the middle of the night most LEO satellites are in Earth's shadow. | Outside Earth's shadow (cylindrical model, R = 6,371 km) |
+| 2 | **The observer's sky is dark** | The sky must be dark enough to see a faint moving point. | Sun at least **6° below** the observer's horizon (end of civil twilight). Visibility gets better through nautical (−12°) and astronomical (−18°) twilight. |
+| 3 | **The satellite is high enough** | Near the horizon there's too much extinction, haze and obstruction. | Elevation **≥ 10°** |
+| 4 | **It is bright enough** | The naked-eye limit for a moving point is about magnitude 4–5 in suburbs and about 6 under dark skies. | Estimated magnitude **≤ 5.0** counts as "likely visible" |
+
+Conditions 1 and 2 together are why satellites are seen in the **hours after sunset and before sunrise**. The ground is dark, but a satellite a few hundred kilometres up is still in sunlight. Later in the night the satellites enter Earth's shadow too.
+
+### 12.2 Brightness estimate
+
+`m = M₁₀₀₀ + 5·log₁₀(range / 1000 km) − 2.5·log₁₀(sin φ + (π − φ)·cos φ)`
+
+- **M₁₀₀₀** is the satellite's "1000-km magnitude": its brightness at 1,000 km range and a 90° phase angle.
+- **φ** is the phase angle (Sun–satellite–observer). The last term is the diffuse-sphere phase law, normalised to zero at 90°. A satellite with the Sun behind the observer (φ → 0) is up to 1.2 magnitudes brighter.
+- **The catalog has no per-satellite brightness**, so M₁₀₀₀ is a heuristic by name (published averages where they exist). These are rough estimates; real satellites flare and vary with attitude.
+
+| Object | M₁₀₀₀ |
+|---|---|
+| ISS (ZARYA) | −1.3 |
+| CSS (TIANHE) | 0.0 |
+| HST | 2.2 |
+| Rocket bodies (`R/B`) | 4.0 |
+| STARLINK | 5.5 (Mallama et al.: about 5.5 for post-VisorSat / Mini at 1000 km) |
+| ONEWEB | 7.5 |
+| Debris (`DEB`) | 8.0 |
+| Everything else | 6.0 |
+
+### 12.3 The golden zone (globe)
+
+On the globe, a satellite is in the **golden zone** when it is sunlit **and** the ground directly beneath it is past civil twilight (the Sun is more than 6° below the horizon there). Anyone under it, given a clear sky, has it in their good-viewing window.
+
+The golden zone always hugs the night side of the **terminator** (the sunset/sunrise line). It's bounded on one side by the darkening sky and on the other by Earth's shadow reaching the satellite's altitude, about 20–30° past the terminator for LEO. These satellites are drawn **green wherever they are on the globe**, overriding the other tiers, or **orange** (green + yellow) when they're also inside the user's camera view. A legend in the globe's top-left panel explains both colours.
+
+### 12.4 Day / night globe
+
+- The globe shader blends the **Blue Marble day texture** and the **Earth-at-night city-lights texture** by the Sun direction, with a soft transition. There's no terminator glow; it made the day side too busy.
+- The twilight band (Sun 6–18° below the horizon) gets a faint green wash, so the ground zone under the green satellites is visible.
+- The Sun position comes from Orekit (`CelestialBodyFactory.getSun()`, using the bundled DE-440 ephemeris). It's computed once per globe pass and sent in the `/api/positions` header, now `Float64 epoch, Float64 sunX/Y/Z (unit, ECEF)`, then the per-satellite Float32 state.
+
+### 12.5 AR screen
+
+- **Dots:** satellites that pass all four criteria for **you** are drawn **green** (the same green as the globe). The rest stay white.
+- **Info card:** a visibility line, e.g. `👁 Likely visible · mag 3.8`, or the reason it isn't (`In Earth's shadow`, `Sky too bright (Sun −2°)`, `Too low`, `Too faint · mag 6.4`).
+- **HUD:** shows the Sun's elevation at the user and the sky state (day / civil / nautical / astronomical twilight / night).
+
+### 12.6 Testing
+- **Unit tests:** shadow test geometry, phase angle, the magnitude formula (equal to M₁₀₀₀ at 1,000 km and 90°), the twilight classification, and the Sun direction vs. a known solstice/equinox declination.
+- **Field test:** compare predicted ISS and Starlink visibility against Heavens-Above for the same evening.
+
+## 13. Milestones
 
 0. ✅ **Fix the foundations.** Permission flow, wait for a GPS fix before filtering, periodic recompute.
 1. 🟡 **Pointing.** `AttitudeTracker` with rotation vector + declination, plus a debug HUD showing boresight az/el. *Done; still to do: a night-sky check against Polaris and the Moon.*
 2. ✅ **Catalog.** Room cache, LEO filter, refresh policy. *(Group tagging is deferred to the filters work.)*
 3. ✅ **Overlay.** CameraX preview, FOV, ARCore/SceneView dropped, projected markers, horizon.
 4. ✅ **Interaction.** Reticle focus, info card, orbit track, tap to lock multiple satellites with per-satellite colors, edge arrows, clear button.
-5. **Polish.** Sunlit/visible classification, filters, calibration UX, trimmed Orekit data.
+5. 🟡 **Polish.** ✅ Sunlit/visible classification (§12); still to do: filters, calibration UX, trimmed Orekit data.
 6. ✅ **Globe screen.** Loading progress, 3D Earth with all LEO satellites, camera-view pyramid and locked satellites (§11).
 
-## 13. Open questions for review
+## 14. Open questions for review
 
 1. ~~**AR approach**~~ — decided: sensor AR with CameraX.
 2. **Satellite set:** we now cache all active LEO (about 16k). Should the default *view* be filtered to curated groups (stations, visual, Starlink)?

@@ -97,7 +97,7 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile var globeCatalogJson: String? = null
         private set
 
-    /** Latest `/api/positions` body: Float64 epoch millis, then Float32 ECEF state per satellite. */
+    /** Latest `/api/positions` body: Float64 epoch millis + Sun direction, then Float32 ECEF state per satellite. */
     @Volatile var globePositions: ByteArray? = null
         private set
 
@@ -172,8 +172,10 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
                 val start = System.currentTimeMillis()
                 val snap = sky.globeSnapshot(start)
                 Log.v(TAG, "Globe pass: ${sky.size} sats in ${System.currentTimeMillis() - start} ms")
-                ByteBuffer.allocate(8 + snap.data.size * 4).order(ByteOrder.LITTLE_ENDIAN).apply {
+                // Header: Float64 epoch millis, Float64 Sun direction (unit, ECEF); then Float32 state.
+                ByteBuffer.allocate(GLOBE_HEADER_BYTES + snap.data.size * 4).order(ByteOrder.LITTLE_ENDIAN).apply {
                     putDouble(snap.epochMillis.toDouble())
+                    snap.sunDir.forEach { putDouble(it) }
                     asFloatBuffer().put(snap.data)
                 }.array()
             }
@@ -335,6 +337,7 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
         const val TRACK_FUTURE_MS = 15 * 60_000L
         const val TRACK_STEP_S = 15
         const val GLOBE_INTERVAL_MS = 5000L
+        private const val GLOBE_HEADER_BYTES = 4 * 8
         const val ORBIT_REFRESH_MS = 60_000L
 
         /** Number of distinct lock colors; must match SkyOverlayView.LOCK_COLORS. */

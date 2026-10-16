@@ -135,6 +135,33 @@ class SkyModelTest {
     }
 
     @Test
+    fun `sun direction matches the solstice declination and noon longitude`() {
+        // June solstice 2026: 2026-06-21 08:24 UTC, declination +23.44°.
+        val solstice = java.time.Instant.parse("2026-06-21T08:24:00Z").toEpochMilli()
+        val s = model.globeSnapshot(solstice).sunDir
+        assertEquals(1.0, Math.sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]), 1e-9)
+        assertEquals(23.44, Math.toDegrees(Math.asin(s[2])), 0.05)
+        // At 12:00 UTC the Sun is over roughly longitude 0 (± the equation of time, < 5°).
+        val noon = java.time.Instant.parse("2026-06-21T12:00:00Z").toEpochMilli()
+        val n = model.globeSnapshot(noon).sunDir
+        assertEquals(0.0, Math.toDegrees(Math.atan2(n[1], n[0])), 5.0)
+    }
+
+    @Test
+    fun `details carry a visibility estimate consistent with the snapshot`() {
+        val t = millisOf(sat.tle.date)
+        for (step in 0 until 144) {
+            val millis = t + step * 600_000L
+            val d = model.details(sat, observer, millis)
+            val obj = model.snapshot(observer, millis, minElevationDeg = -90.0)
+            val o = obj.objects.single()
+            assertEquals("sunlit at step $step", o.sunlit, d.visibility.sunlit)
+            if (o.magnitude != null) assertEquals(o.magnitude!!, d.visibility.magnitude!!, 1e-6)
+            assertEquals(obj.sunElevationDeg, d.visibility.observerSunElevationDeg, 1e-9)
+        }
+    }
+
+    @Test
     fun `orbit path covers one period and passes through the current position`() {
         val t = millisOf(sat.tle.date)
         val path = model.orbitPathEcef(sat, t, stepSeconds = 60)

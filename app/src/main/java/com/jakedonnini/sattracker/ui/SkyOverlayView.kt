@@ -25,6 +25,7 @@ import com.jakedonnini.sattracker.orbit.Satellite
 import com.jakedonnini.sattracker.orbit.SkyObject
 import com.jakedonnini.sattracker.orbit.SkySnapshot
 import com.jakedonnini.sattracker.orbit.TrackPoint
+import com.jakedonnini.sattracker.orbit.Visibility
 import com.jakedonnini.sattracker.sensors.Attitude
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -75,6 +76,8 @@ class SkyOverlayView @JvmOverloads constructor(
     })
 
     private val dotPaint = fill(Color.argb(220, 230, 240, 255))
+    /** Satellites that pass every naked-eye test for the user right now (design doc §12). */
+    private val visibleDotPaint = fill(VISIBLE_COLOR).apply { setShadowLayer(4 * dp, 0f, 0f, VISIBLE_COLOR) }
     private val focusDotPaint = fill(FOCUS_COLOR)
     private val focusRingPaint = stroke(FOCUS_COLOR, 2f)
     private val reticlePaint = stroke(Color.argb(160, 255, 255, 255), 1.5f)
@@ -131,6 +134,8 @@ class SkyOverlayView @JvmOverloads constructor(
         if (snapshot != null) {
             val dt = (now - snapshot.epochMillis) / 1000.0
             val candidateCos = cos(Math.toRadians(focusSelector.exitDeg + 1.0))
+            val skyDark = snapshot.sunElevationDeg <= Visibility.DARK_SKY_SUN_ELEVATION_DEG
+            val minSinEl = kotlin.math.sin(Math.toRadians(Visibility.MIN_ELEVATION_DEG))
             for (obj in snapshot.objects) {
                 val p = obj.positionAfter(dt)
                 if (p.u <= 0) continue // below the horizon
@@ -146,7 +151,14 @@ class SkyOverlayView @JvmOverloads constructor(
                 targets += HitTarget(id, sp.x, sp.y)
                 satellites[id] = obj.satellite
                 if (id != focusedId && id !in lockedById) {
-                    canvas.drawCircle(sp.x, sp.y, DOT_RADIUS_DP * dp, dotPaint)
+                    val mag = obj.magnitude
+                    val likelyVisible = skyDark && mag != null && mag <= Visibility.NAKED_EYE_LIMIT_MAG &&
+                        unit.u >= minSinEl
+                    if (likelyVisible) {
+                        canvas.drawCircle(sp.x, sp.y, VISIBLE_DOT_RADIUS_DP * dp, visibleDotPaint)
+                    } else {
+                        canvas.drawCircle(sp.x, sp.y, DOT_RADIUS_DP * dp, dotPaint)
+                    }
                 }
             }
         }
@@ -317,6 +329,10 @@ class SkyOverlayView @JvmOverloads constructor(
 
     companion object {
         val FOCUS_COLOR = Color.rgb(255, 193, 7)
+        /** Same green as the globe's golden-zone (likely visible) satellites. */
+        val VISIBLE_COLOR = Color.rgb(52, 199, 89)
+        /** Globe: likely visible and inside the camera view (green + yellow). */
+        val VISIBLE_IN_VIEW_COLOR = Color.rgb(255, 149, 0)
 
         /** Colors for locked satellites, chosen to stay distinct from the amber focus color. */
         val LOCK_COLORS = intArrayOf(
@@ -329,6 +345,7 @@ class SkyOverlayView @JvmOverloads constructor(
         )
 
         private const val DOT_RADIUS_DP = 2.5f
+        private const val VISIBLE_DOT_RADIUS_DP = 3.5f
         private const val FOCUS_DOT_RADIUS_DP = 8f
         private const val LOCKED_DOT_RADIUS_DP = 7f
         private const val TAP_RADIUS_DP = 36f

@@ -5,4 +5,6 @@
     <string name="open_ar">📷 AR camera</string>
     <string name="center_on_me">⌖ Center on me</string>
     <string name="globe_title">%1$,d LEO satellites</string>
+    <string name="legend_visible">Likely visible (sunlit over a dark sky)</string>
+    <string name="legend_visible_in_view">Likely visible, in your camera view</string>
 </resources>
