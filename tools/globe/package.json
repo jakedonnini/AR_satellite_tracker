@@ -1,0 +1,16 @@
+{
+  "name": "sattracker-globe-bundle",
+  "private": true,
+  "description": "Builds app/src/main/assets/globe/vendor.js: globe.gl + three.js as one offline IIFE for the Android WebView.",
+  "scripts": {
+    "build": "esbuild entry.js --bundle --minify --format=iife --target=chrome100 --legal-comments=eof --outfile=../../app/src/main/assets/globe/vendor.js && node copy-assets.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10",
+    "globe.gl": "2.46.2",
+    "three": "0.186.1"
+  },
+  "overrides": {
+    "three-globe": "2.45.3"
+  }
+}

@@ -108,6 +108,45 @@ class SkyModelTest {
     }
 
     @Test
+    fun `globe snapshot is Earth-fixed and agrees with the geodetic altitude`() {
+        val t = millisOf(sat.tle.date) + 3_600_000L
+        val g = model.globeSnapshot(t)
+        assertEquals(6, g.data.size)
+        val (x, y, z) = Triple(g.data[0].toDouble(), g.data[1].toDouble(), g.data[2].toDouble())
+        val r = Math.sqrt(x * x + y * y + z * z)
+        // Radius between the polar radius + 370 km and the equatorial radius + 460 km.
+        assertTrue("radius $r km", r in 6356.0 + 370..6378.0 + 460)
+
+        val earth = OneAxisEllipsoid(
+            Constants.WGS84_EARTH_EQUATORIAL_RADIUS,
+            Constants.WGS84_EARTH_FLATTENING,
+            FramesFactory.getITRF(IERSConventions.IERS_2010, true),
+        )
+        val date = AbsoluteDate(java.util.Date(t), TimeScalesFactory.getUTC())
+        val geo = earth.transform(
+            org.hipparchus.geometry.euclidean.threed.Vector3D(x * 1000, y * 1000, z * 1000),
+            earth.bodyFrame, date,
+        )
+        assertEquals(model.details(sat, observer, t).altitudeKm, geo.altitude / 1000, 0.05)
+
+        // Earth-fixed speed is inertial speed minus Earth's rotation (~0.4 km/s at most).
+        val v = Math.sqrt((3..5).sumOf { g.data[it].toDouble() * g.data[it] })
+        assertTrue("ECEF speed $v km/s", v in 6.9..7.7)
+    }
+
+    @Test
+    fun `orbit path covers one period and passes through the current position`() {
+        val t = millisOf(sat.tle.date)
+        val path = model.orbitPathEcef(sat, t, stepSeconds = 60)
+        val periodMin = 2 * Math.PI / sat.tle.meanMotion / 60
+        val points = path.size / 3
+        assertTrue("$points points for a $periodMin min orbit", Math.abs(points - (periodMin + 1)) <= 2)
+        val mid = path.size / 3 / 2
+        val now = model.globeSnapshot(t).data
+        for (k in 0..2) assertEquals(now[k], path[mid * 3 + k], 1f)
+    }
+
+    @Test
     fun `track points are unit vectors at the requested times`() {
         val t0 = millisOf(sat.tle.date)
         val track = model.track(sat, observer, t0, t0 + 600_000L, stepSeconds = 30)

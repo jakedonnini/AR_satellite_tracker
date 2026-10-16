@@ -2,6 +2,7 @@ package com.jakedonnini.sattracker.camera
 
 import android.content.Context
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.camera.camera2.interop.Camera2CameraInfo
@@ -30,25 +31,45 @@ data class CameraFov(val horizontalDeg: Double, val verticalDeg: Double)
  */
 class CameraController(private val context: Context) {
 
-    private val _fov = MutableStateFlow<CameraFov?>(null)
+    // Read straight from Camera2 so the globe's view pyramid is right before the camera is ever
+    // opened; refined from the bound CameraX camera in start().
+    private val _fov = MutableStateFlow(backCameraFov())
     val fov: StateFlow<CameraFov?> = _fov.asStateFlow()
+
+    private var provider: ProcessCameraProvider? = null
 
     fun start(lifecycleOwner: LifecycleOwner, previewView: PreviewView) {
         val providerFuture = ProcessCameraProvider.getInstance(context)
         providerFuture.addListener({
-            val provider = providerFuture.get()
+            val provider = providerFuture.get().also { this.provider = it }
             val preview = Preview.Builder().build().also {
                 it.setSurfaceProvider(previewView.surfaceProvider)
             }
             try {
                 provider.unbindAll()
                 val camera = provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview)
-                _fov.value = readFov(camera)
+                readFov(camera)?.let { _fov.value = it }
                 Log.d(TAG, "Camera bound, FOV: ${_fov.value}")
             } catch (e: Exception) {
                 Log.e(TAG, "Camera bind failed", e)
             }
         }, ContextCompat.getMainExecutor(context))
+    }
+
+    /** Releases the camera (e.g. while the globe screen is showing). */
+    fun stop() {
+        provider?.unbindAll()
+    }
+
+    private fun backCameraFov(): CameraFov? = try {
+        val manager = context.getSystemService(CameraManager::class.java)
+        manager.cameraIdList
+            .map { manager.getCameraCharacteristics(it) }
+            .firstOrNull { it.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK }
+            ?.let { fovFrom(it.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE), it.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()) }
+    } catch (e: Exception) {
+        Log.w(TAG, "Could not read camera characteristics", e)
+        null
     }
 
     @OptIn(ExperimentalCamera2Interop::class)
@@ -57,6 +78,10 @@ class CameraController(private val context: Context) {
         val sensorSize = info.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
         val focal = info.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
             ?.firstOrNull()
+        return fovFrom(sensorSize, focal)
+    }
+
+    private fun fovFrom(sensorSize: android.util.SizeF?, focal: Float?): CameraFov? {
         if (sensorSize == null || focal == null) return null
         fun fovDeg(size: Float) = Math.toDegrees(2 * atan(size / (2.0 * focal)))
         return CameraFov(fovDeg(sensorSize.width), fovDeg(sensorSize.height))

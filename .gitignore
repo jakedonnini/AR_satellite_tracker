@@ -16,3 +16,6 @@ local.properties
 # OS
 .DS_Store
 Thumbs.db
+
+# Globe bundle tooling
+tools/globe/node_modules/

@@ -2,7 +2,7 @@
 
 An Android app that overlays low-Earth-orbit satellites on the live camera view. You point your phone at the sky to see what's overhead, where it's heading and what it is.
 
-> **Status:** early prototype. The AR overlay works: it draws satellites above the horizon, and the one under the reticle gets an info card and its orbit path. Pointing accuracy still needs an outdoor night test. See [docs/DESIGN.md](docs/DESIGN.md).
+> **Status:** early prototype. The app opens on a 3D globe showing every LEO satellite and your camera's view, then switches to an AR camera overlay where you can focus and lock satellites. Pointing accuracy still needs an outdoor night test. See [docs/DESIGN.md](docs/DESIGN.md).
 
 ## How it works
 
@@ -23,7 +23,9 @@ app/src/main/java/com/jakedonnini/sattracker/
 ├── sensors/    Fused location, rotation-vector attitude
 ├── ar/         Sky → pixel projection, focus selection
 └── ui/         SkyViewModel, AR overlay view
+app/src/main/assets/globe/         Globe screen page (globe.gl + three.js bundle, textures, globe.js)
 app/src/main/assets/orekit-data/   Orekit reference data (leap seconds, EOP, ephemerides)
+tools/globe/                       Builds the globe bundle; dev-server.mjs previews the page on desktop
 docs/                              Design docs
 ```
 

@@ -30,6 +30,7 @@ The app now launches into a live camera preview with a debug HUD that shows ever
 | Focus + info | ✅ | The reticle picks the closest satellite within 3° (kept until 5°, with a 1° switch margin). Its dot grows and gets a name label. The info card shows altitude, range, speed, rising/setting and az/el. Checked on device: Starlink at 484 km, 7.63 km/s. |
 | Orbit path | ✅ | The focused satellite's track from −5 to +15 min at 15 s steps: past dashed, future solid with one-minute ticks, clipped at the horizon. |
 | Lock + track | ✅ | Tapping a marker (36 dp hit radius) locks it; tapping again releases it. Each locked satellite gets one of 6 colors that stay distinct from the amber focus color, and keeps its dot, label and orbit path in that color while you pan around. Off-screen or behind-camera locks show a colored edge arrow pointing the way to turn (dimmed with "below horizon" once it sets). A translucent "Clear selection (N)" button appears while anything is locked. The info card shows the focused satellite, or else the most recently locked one. Confirmed on device by locking two satellites and panning away. |
+| Globe screen | ✅ | Opens on a globe.gl Earth with every LEO satellite, the user's marker, the live camera-view pyramid with in-view satellites highlighted, and locked satellites with labels and one-period orbit paths. A weighted loading bar becomes the **📷 AR camera** toggle, which sits bottom-center on both screens (🌐 Globe in AR), and Back also returns to the globe. Top-right holds the screen's action (⌖ Center on me / ✕ Clear). A rippling wall of light (standing on the ground circle of a 40° cone from Earth's center through the user) marks how far out LEO satellites can be seen, there are three satellite tiers (dim / above horizon / in camera view), and the camera pyramid fades out along its length. Checked in a desktop browser with synthetic orbits (`tools/globe/dev-server.mjs`): 60 fps with 16k points, no console errors, Earth texture aligned (marker at the right place). On the Pixel 6 Pro: confirmed working by the user, no JS errors or WebGL warnings, and a full Earth-fixed pass over 15,942 satellites takes about 0.5–0.8 s every 5 s. |
 
 **Sky pass cost (Pixel 6 Pro):** a full SGP4 pass over 16k satellites takes about 1.0–1.8 s. It now runs every 20 s with a −10° mask to find candidates (about 1,600). The 2 s pass propagates only those candidates, in about 100 ms.
 
@@ -214,7 +215,81 @@ The active LEO catalog is about 16k objects (mostly Starlink), and running SGP4 
 - **Orbit:** compare the predicted az/el of the ISS against Heavens-Above / N2YO for a fixed time and place (within 0.5°).
 - **Field:** check the pointing against known references. Polaris sits at az ≈ 0°, el ≈ latitude; the Moon's az/el comes from Orekit. Then do a real ISS pass.
 
-## 11. Milestones
+## 11. Globe screen (loading + external view)
+
+*Proposed and implemented 2026-10-16 on the `globe-loading-screen` branch.*
+
+### 11.1 What the user sees
+
+1. **App launch → Globe screen.** A 3D Earth on a star field. You can rotate it with one finger and zoom with a pinch. It opens looking at the user's location.
+2. **The user** is a marker on the surface at their GPS position. Their **camera's view** is a translucent pyramid rising from that point. It has the same horizontal and vertical field of view as the camera preview, it follows the phone's live pointing direction, and it reaches out to 2,500 km (past the range of LEO satellites near the horizon). Strictly it's a rectangular frustum rather than a round cone, so it shows *exactly* which satellites the AR screen would show. Its faces and edges **fade out** along its length (per-vertex alpha across 5 rings), so it has no hard far end.
+3. **The visibility wall** is a ring of light standing on the ground around the user.
+   - **Where it stands:** take a cone from Earth's center through the user's GPS position with half-angle `acos(R / (R + h))`. The cone's base, projected onto the surface, is the circle beneath which a satellite at altitude *h* sits exactly on the user's horizon. With h = 2,000 km (the top of LEO) that's about 40°, a circle roughly 4,500 km across. No LEO satellite outside the wall can be seen from the user. Satellites inside it may still be below the horizon if they're low; the cyan tier shows exactly which are up.
+   - **How it looks:** the wall rises radially from that circle with a bright foot line on the ground, fades toward space, and its top edge ripples with waves travelling around the circumference (a time-animated fragment shader with additive blending).
+   - **Tuning:** `WALL_ALT_KM` in `globe.js` sets *h*; 550 km (the main Starlink shell) would give about a 22° circle.
+4. **Loading bar** at the bottom, with a stage label, tracking the startup pipeline (§11.4).
+5. **When loading finishes:**
+   - **Every satellite appears.** That's the whole LEO catalog (about 16k), not just the ones in view, drawn in three tiers: dim (not visible from the user), cyan (above the user's horizon), yellow (inside the camera's view).
+   - **Locked satellites** (from the AR screen) show in their lock color, larger, with a name label and their orbit path.
+   - **The loading bar becomes the "📷 AR camera" toggle**, and **"⌖ Center on me"** appears in the top right.
+6. **Shared layout, no overlaps.** Both screens use the same scheme:
+   - **Top row:** an info panel on the left takes the remaining width (the satellite count on the globe, the debug HUD in AR), and the screen's action is on the right ("⌖ Center on me" / "✕ Clear (N)").
+   - **Bottom stack:** details or loading, then the **screen toggle**, in the same spot, size and style on both screens ("📷 AR camera" / "🌐 Globe").
+   - Locks are shared both ways because both screens read the same `SkyViewModel`.
+
+### 11.2 Rendering: globe.gl in a WebView
+
+| Option | Verdict |
+|---|---|
+| **globe.gl + three.js in a WebView** ✅ | Open source (MIT). Gives orbit/zoom controls, a textured Earth, atmosphere glow, and path/label layers out of the box, and its own examples include a real-time satellite tracker. We bundle it offline, so it needs no network at runtime. |
+| SceneView / Filament | Native and fast, but has no globe primitives. Drawing 16k points needs a custom compiled material, and labels and paths would be hand-built. |
+| Raw OpenGL ES | The most control, but every feature (camera controls, atmosphere, labels) would be written from scratch. |
+
+- `tools/globe/` pins exact versions (globe.gl 2.46.2, three 0.186.1, three-globe 2.45.3) and uses esbuild to produce **one** `assets/globe/vendor.js` with a single shared three.js instance. The textures are NASA Blue Marble imagery and a star field from the three-globe package.
+- The page (`assets/globe/index.html` + `globe.js`) is served via AndroidX **`WebViewAssetLoader`** at `https://appassets.androidplatform.net/`. That gives it a proper HTTPS origin for `fetch()` and avoids `file://` access.
+
+### 11.3 Data flow and frames
+
+```
+SkyModel.globeSnapshot()  ──(every 5 s, all ~16k sats)──▶  /api/positions   (binary Float32: ECEF x,y,z,vx,vy,vz in km, km/s)
+SatelliteRepository       ──(once)───────────────────────▶  /api/catalog     (JSON: ids + names, same order)
+SkyViewModel (10 Hz)      ──evaluateJavascript──────────▶  SatGlobe.update({observer, boresight, fov, locked[], focusId})
+locked satellites         ──(on lock / every 60 s)───────▶  orbit paths: one orbital period, ECEF, 60 s steps
+```
+
+- **Frames:** positions are Earth-fixed (ITRF), so they line up with the texture. One TEME→ITRF transform is computed per pass and shared by all satellites, as in the AR snapshot.
+- **Mapping to the globe:** three-globe uses a sphere of radius 100, with +y pointing north and +z through (lat 0, lon 0). So `three = (ECEF.y, ECEF.z, ECEF.x) · 100 / 6371 km`. The observer and the pyramid use the same mapping.
+- **Smooth motion:** positions arrive every 5 s and the page extrapolates `p + v·Δt` every frame. Over 5 s the error from the orbit's curvature is about 0.4 km, which is invisible at globe scale.
+- **The camera pyramid** is built in the observer's local East-North-Up frame from the fused boresight (true north). Its four edges are offset by ±hFOV/2 and ±vFOV/2 and rolled by the phone's roll, then converted to ECEF.
+- **In-view test:** per frame and per satellite in JS, a satellite is in view if it's within 2,500 km, its elevation is above 0°, and it's inside the four side planes. That's 16k dot products, which is trivial.
+
+### 11.4 Loading pipeline and progress
+
+| Stage | Weight | Progress source |
+|---|---|---|
+| Orekit reference data | 10% | Files copied from assets (first launch only, instant afterwards) |
+| Satellite catalog | 50% | Bytes downloaded vs. an estimate of about 9 MB if CelesTrak sends no `Content-Length` (it streams). Instant when the cache is fresh. |
+| Building propagators | 30% | Satellites processed / total |
+| First globe positions | 10% | Completion of the first full ECEF pass |
+
+`SkyViewModel.loading: StateFlow<LoadingState(stage, fraction, done)>` drives a native `ProgressBar` and label. When `done`, they're replaced by the **📷 AR camera** toggle, and **⌖ Center on me** appears top-right.
+
+### 11.5 Navigation and lifecycle
+
+- **One activity, two layers.** The globe (WebView plus its controls) sits on top of the AR layer (PreviewView, overlay, HUD, info card). Switching screens toggles visibility. The ViewModel, sensors and locks are shared.
+- **On the globe screen:**
+  - The CameraX preview is **unbound** to save power.
+  - The AR candidate/snapshot passes are **paused**.
+  - The globe position pass runs every 5 s.
+- **On the AR screen:** the reverse, and the WebView is paused (`onPause`) so its render loop stops.
+- **Back button:** on the AR screen it returns to the globe; on the globe screen it exits.
+
+### 11.6 Out of scope for this branch
+- Day/night shading on the globe.
+- Tapping satellites on the globe to lock them. The bridge could support it later; for now, locking happens on the AR screen.
+- MEO/GEO objects. The catalog is still filtered to LEO (§3).
+
+## 12. Milestones
 
 0. ✅ **Fix the foundations.** Permission flow, wait for a GPS fix before filtering, periodic recompute.
 1. 🟡 **Pointing.** `AttitudeTracker` with rotation vector + declination, plus a debug HUD showing boresight az/el. *Done; still to do: a night-sky check against Polaris and the Moon.*
@@ -222,8 +297,9 @@ The active LEO catalog is about 16k objects (mostly Starlink), and running SGP4 
 3. ✅ **Overlay.** CameraX preview, FOV, ARCore/SceneView dropped, projected markers, horizon.
 4. ✅ **Interaction.** Reticle focus, info card, orbit track, tap to lock multiple satellites with per-satellite colors, edge arrows, clear button.
 5. **Polish.** Sunlit/visible classification, filters, calibration UX, trimmed Orekit data.
+6. ✅ **Globe screen.** Loading progress, 3D Earth with all LEO satellites, camera-view pyramid and locked satellites (§11).
 
-## 12. Open questions for review
+## 13. Open questions for review
 
 1. ~~**AR approach**~~ — decided: sensor AR with CameraX.
 2. **Satellite set:** we now cache all active LEO (about 16k). Should the default *view* be filtered to curated groups (stations, visual, Starlink)?

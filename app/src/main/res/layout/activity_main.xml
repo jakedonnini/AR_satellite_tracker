@@ -1,63 +1,182 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Both screens share one layout scheme so nothing overlaps and controls don't jump around:
+  - Top row: an info panel on the left that takes the remaining width, and the screen's
+    action button on the right (Clear selection / Center on me).
+  - Bottom stack: details or loading, then the screen toggle (Globe / AR camera) in the same
+    spot, size and style on both screens.
+-->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:keepScreenOn="true">
 
-    <androidx.camera.view.PreviewView
-        android:id="@+id/previewView"
+    <!-- ================= AR screen ================= -->
+    <FrameLayout
+        android:id="@+id/arLayer"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        android:visibility="gone">
 
-    <com.jakedonnini.sattracker.ui.SkyOverlayView
-        android:id="@+id/skyOverlay"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        <androidx.camera.view.PreviewView
+            android:id="@+id/previewView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
 
-    <!-- Debug HUD: live readout of every data source. Tap to collapse. -->
-    <TextView
-        android:id="@+id/debugHud"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_margin="12dp"
-        android:background="@drawable/bg_panel"
-        android:fontFamily="monospace"
-        android:padding="8dp"
-        android:textColor="#FFFFFF"
-        android:textSize="11sp" />
+        <com.jakedonnini.sattracker.ui.SkyOverlayView
+            android:id="@+id/skyOverlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
 
-    <!-- Bottom stack: details for the focused / last-locked satellite, then the clear button. -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:gravity="center_horizontal"
-        android:orientation="vertical"
-        android:padding="16dp">
-
-        <TextView
-            android:id="@+id/infoCard"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@drawable/bg_panel"
-            android:lineSpacingExtra="2dp"
-            android:padding="16dp"
-            android:textColor="#FFFFFF"
-            android:textSize="14sp"
-            android:visibility="gone" />
+            android:layout_gravity="top"
+            android:gravity="top"
+            android:orientation="horizontal"
+            android:padding="12dp">
 
-        <Button
-            android:id="@+id/clearSelection"
-            style="?android:attr/borderlessButtonStyle"
-            android:layout_width="wrap_content"
-            android:layout_height="44dp"
-            android:layout_marginTop="12dp"
-            android:background="@drawable/bg_clear_button"
-            android:paddingStart="24dp"
-            android:paddingEnd="24dp"
-            android:textAllCaps="false"
-            android:textColor="#FFFFFF"
-            android:textSize="14sp"
-            android:visibility="gone" />
-    </LinearLayout>
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+
+                <!-- Debug HUD: live readout of every data source. Tap to collapse. -->
+                <TextView
+                    android:id="@+id/debugHud"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_panel"
+                    android:fontFamily="monospace"
+                    android:padding="8dp"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp" />
+            </FrameLayout>
+
+            <Button
+                android:id="@+id/clearSelection"
+                style="@style/OverlayButton"
+                android:layout_marginStart="8dp"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- Bottom stack: details for the focused / last-locked satellite, then the screen toggle. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:id="@+id/infoCard"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:background="@drawable/bg_panel"
+                android:lineSpacingExtra="2dp"
+                android:padding="16dp"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/openGlobe"
+                style="@style/ScreenToggleButton"
+                android:text="@string/open_globe" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- ================= Globe screen (also the loading screen) ================= -->
+    <FrameLayout
+        android:id="@+id/globeLayer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000">
+
+        <WebView
+            android:id="@+id/globeWebView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="12dp">
+
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+
+                <TextView
+                    android:id="@+id/globeTitle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_panel"
+                    android:ellipsize="end"
+                    android:maxLines="2"
+                    android:paddingStart="12dp"
+                    android:paddingTop="6dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="6dp"
+                    android:textColor="#FFFFFF"
+                    android:textSize="13sp"
+                    android:visibility="gone" />
+            </FrameLayout>
+
+            <Button
+                android:id="@+id/centerOnMe"
+                style="@style/OverlayButton"
+                android:layout_marginStart="8dp"
+                android:text="@string/center_on_me"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- Bottom stack: loading bar while starting up, then the screen toggle. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <LinearLayout
+                android:id="@+id/loadingPanel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_panel"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:id="@+id/loadingLabel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="#FFFFFF"
+                    android:textSize="14sp" />
+
+                <ProgressBar
+                    android:id="@+id/loadingBar"
+                    style="?android:attr/progressBarStyleHorizontal"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:max="1000"
+                    android:progressTint="#FFD54F" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/openAr"
+                style="@style/ScreenToggleButton"
+                android:layout_marginTop="12dp"
+                android:text="@string/open_ar"
+                android:visibility="gone" />
+        </LinearLayout>
+    </FrameLayout>
 </FrameLayout>

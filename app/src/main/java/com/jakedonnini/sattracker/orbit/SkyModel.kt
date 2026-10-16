@@ -31,6 +31,9 @@ class SkyObject(val satellite: Satellite, val position: Enu, val velocity: Enu) 
     )
 }
 
+/** ECEF state of every satellite at [epochMillis]; see [SkyModel.globeSnapshot]. */
+class GlobeSnapshot(val epochMillis: Long, val data: FloatArray)
+
 /** Every satellite near or above the horizon at [epochMillis]. */
 class SkySnapshot(val epochMillis: Long, val objects: List<SkyObject>)
 
@@ -56,7 +59,11 @@ data class SatelliteDetails(
  * It must only be called from one thread at a time (propagators are stateful).
  * [track] and [details] build their own propagator, so they're safe to call concurrently.
  */
-class SkyModel(satellites: List<Satellite>) {
+class SkyModel(
+    satellites: List<Satellite>,
+    /** 0..1 while propagators are built (the slow part of construction). */
+    onProgress: (Float) -> Unit = {},
+) {
     private val utc = TimeScalesFactory.getUTC()
     private val teme = FramesFactory.getTEME()
     private val earth = OneAxisEllipsoid(
@@ -65,16 +72,70 @@ class SkyModel(satellites: List<Satellite>) {
         FramesFactory.getITRF(IERSConventions.IERS_2010, true),
     )
 
-    private val tracked: List<Pair<Satellite, TLEPropagator>> = satellites.mapNotNull { sat ->
+    private val tracked: List<Pair<Satellite, TLEPropagator>> = satellites.mapIndexedNotNull { i, sat ->
+        if (i % 500 == 0) onProgress(i.toFloat() / satellites.size)
         try {
             sat to TLEPropagator.selectExtrapolator(sat.tle)
         } catch (e: Exception) {
             Log.w(TAG, "Cannot build propagator for ${sat.noradId}", e)
             null
         }
-    }
+    }.also { onProgress(1f) }
 
     val size: Int get() = tracked.size
+
+    /** Every satellite with a working propagator, in the order [globeSnapshot] reports them. */
+    val satellites: List<Satellite> = tracked.map { it.first }
+
+    /**
+     * Earth-fixed (ITRF) position and velocity of **every** satellite, for the globe view.
+     * Data is [x, y, z, vx, vy, vz] per satellite in km and km/s, in [satellites] order;
+     * satellites SGP4 can't propagate (decayed / stale elements) are NaN.
+     * Same threading rule as [snapshot].
+     */
+    fun globeSnapshot(epochMillis: Long): GlobeSnapshot {
+        val date = dateOf(epochMillis)
+        val temeToItrf = teme.getTransformTo(earth.bodyFrame, date)
+        val data = FloatArray(tracked.size * 6) { Float.NaN }
+        tracked.forEachIndexed { i, (_, propagator) ->
+            try {
+                val pv = temeToItrf.transformPVCoordinates(propagator.getPVCoordinates(date, teme))
+                val o = i * 6
+                data[o] = (pv.position.x / 1000).toFloat()
+                data[o + 1] = (pv.position.y / 1000).toFloat()
+                data[o + 2] = (pv.position.z / 1000).toFloat()
+                data[o + 3] = (pv.velocity.x / 1000).toFloat()
+                data[o + 4] = (pv.velocity.y / 1000).toFloat()
+                data[o + 5] = (pv.velocity.z / 1000).toFloat()
+            } catch (e: Exception) {
+                // Leave NaN: the globe skips it.
+            }
+        }
+        return GlobeSnapshot(epochMillis, data)
+    }
+
+    /**
+     * One orbital period of [satellite]'s path in Earth-fixed coordinates (km, flattened xyz),
+     * centered on [centerMillis]. Because the Earth turns underneath, this is the path relative
+     * to the ground, which is what the globe shows.
+     */
+    fun orbitPathEcef(satellite: Satellite, centerMillis: Long, stepSeconds: Int = 60): FloatArray {
+        val propagator = TLEPropagator.selectExtrapolator(satellite.tle)
+        val periodSeconds = 2 * Math.PI / satellite.tle.meanMotion
+        // Step outward from now so the current position is exactly the middle vertex.
+        val stepsEachSide = kotlin.math.ceil(periodSeconds / 2 / stepSeconds).toInt()
+        val times = (-stepsEachSide..stepsEachSide).map { centerMillis + it * stepSeconds * 1000L }
+        val out = FloatArray(times.size * 3)
+        times.forEachIndexed { i, t ->
+            val date = dateOf(t)
+            val p = teme.getStaticTransformTo(earth.bodyFrame, date)
+                .transformPosition(propagator.getPVCoordinates(date, teme).position)
+            out[i * 3] = (p.x / 1000).toFloat()
+            out[i * 3 + 1] = (p.y / 1000).toFloat()
+            out[i * 3 + 2] = (p.z / 1000).toFloat()
+        }
+        return out
+    }
 
     /**
      * @param onlyIds if non-null, propagate just these satellites. Callers use a cheap
