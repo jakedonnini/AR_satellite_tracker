@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jakedonnini.sattracker.SatTrackerApp
+import com.jakedonnini.sattracker.ar.OverlayGeometry
 import com.jakedonnini.sattracker.orbit.Observer
 import com.jakedonnini.sattracker.orbit.OrekitInitializer
 import com.jakedonnini.sattracker.orbit.Satellite
@@ -26,18 +27,20 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Everything shown about the satellite under the reticle. */
-data class FocusState(
+/** Everything shown about a satellite that is focused (under the reticle) or locked. */
+data class TrackedSatellite(
     val satellite: Satellite,
     val details: SatelliteDetails? = null,
     /** Sky track around now, for drawing the orbit path. */
     val track: List<TrackPoint> = emptyList(),
+    /** Palette slot for a locked satellite; null for one that's only focused. */
+    val colorSlot: Int? = null,
 )
 
 /**
- * Owns the sky state: sensors, the catalog, the periodic sky snapshot and the focused
- * satellite. The Activity forwards lifecycle (via [setActive]) and permissions; the overlay
- * reads the latest values every frame.
+ * Owns the sky state: sensors, the catalog, the periodic sky snapshot, the focused satellite
+ * and the user's locked satellites. The Activity forwards lifecycle (via [setActive]) and
+ * permissions; the overlay reads the latest values every frame.
  */
 class SkyViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -50,11 +53,16 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
     private val _snapshot = MutableStateFlow<SkySnapshot?>(null)
     val snapshot: StateFlow<SkySnapshot?> = _snapshot.asStateFlow()
 
-    private val _focus = MutableStateFlow<FocusState?>(null)
-    val focus: StateFlow<FocusState?> = _focus.asStateFlow()
+    private val _focus = MutableStateFlow<TrackedSatellite?>(null)
+    val focus: StateFlow<TrackedSatellite?> = _focus.asStateFlow()
+
+    private val _locked = MutableStateFlow<List<TrackedSatellite>>(emptyList())
+    /** Satellites the user tapped to hold, in lock order. */
+    val locked: StateFlow<List<TrackedSatellite>> = _locked.asStateFlow()
 
     @Volatile private var active = false
     private var focusJob: Job? = null
+    private val lockJobs = HashMap<Int, Job>()
 
     init {
         loadCatalog(app as SatTrackerApp)
@@ -107,31 +115,74 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
     fun setFocus(satellite: Satellite?) {
         if (satellite?.noradId == _focus.value?.satellite?.noradId) return
         focusJob?.cancel()
-        _focus.value = satellite?.let { FocusState(it) }
+        _focus.value = satellite?.let { TrackedSatellite(it) }
         if (satellite == null) return
 
-        focusJob = viewModelScope.launch {
-            var lastTrackMillis = 0L
-            while (isActive) {
-                val sky = _skyModel.value
-                val observer = observer()
-                if (sky != null && observer != null) {
-                    val now = System.currentTimeMillis()
-                    val refreshTrack = now - lastTrackMillis > TRACK_REFRESH_MS
-                    val (details, track) = withContext(Dispatchers.Default) {
-                        val details = sky.details(satellite, observer, now)
-                        val track = if (refreshTrack) {
-                            sky.track(satellite, observer, now - TRACK_PAST_MS, now + TRACK_FUTURE_MS, TRACK_STEP_S)
-                        } else null
-                        details to track
-                    }
-                    if (track != null) lastTrackMillis = now
-                    _focus.value = _focus.value
-                        ?.takeIf { it.satellite.noradId == satellite.noradId }
-                        ?.let { it.copy(details = details, track = track ?: it.track) }
-                }
-                delay(DETAILS_INTERVAL_MS)
+        focusJob = launchTracking(satellite) { details, track ->
+            _focus.value = _focus.value
+                ?.takeIf { it.satellite.noradId == satellite.noradId }
+                ?.let { it.copy(details = details, track = track ?: it.track) }
+        }
+    }
+
+    fun isLocked(noradId: Int) = _locked.value.any { it.satellite.noradId == noradId }
+
+    /** Tap handler: lock a satellite (giving it the next free color), or release it. */
+    fun toggleLock(satellite: Satellite) {
+        val id = satellite.noradId
+        if (isLocked(id)) {
+            lockJobs.remove(id)?.cancel()
+            _locked.value = _locked.value.filterNot { it.satellite.noradId == id }
+            return
+        }
+        val slot = OverlayGeometry.nextColorSlot(_locked.value.mapNotNull { it.colorSlot }, LOCK_PALETTE_SIZE)
+        // Seed with whatever focus already computed so the path shows immediately.
+        val seed = _focus.value?.takeIf { it.satellite.noradId == id }
+        _locked.value += TrackedSatellite(
+            satellite,
+            details = seed?.details,
+            track = seed?.track.orEmpty(),
+            colorSlot = slot,
+        )
+        lockJobs[id] = launchTracking(satellite) { details, track ->
+            _locked.value = _locked.value.map {
+                if (it.satellite.noradId == id) it.copy(details = details, track = track ?: it.track) else it
             }
+        }
+    }
+
+    fun clearLocks() {
+        lockJobs.values.forEach { it.cancel() }
+        lockJobs.clear()
+        _locked.value = emptyList()
+    }
+
+    /**
+     * Keeps one satellite's details fresh (every [DETAILS_INTERVAL_MS]) and its sky track
+     * (every [TRACK_REFRESH_MS]); [update] receives a null track when it wasn't recomputed.
+     */
+    private fun launchTracking(
+        satellite: Satellite,
+        update: (SatelliteDetails, List<TrackPoint>?) -> Unit,
+    ): Job = viewModelScope.launch {
+        var lastTrackMillis = 0L
+        while (isActive) {
+            val sky = _skyModel.value
+            val observer = observer()
+            if (active && sky != null && observer != null) {
+                val now = System.currentTimeMillis()
+                val refreshTrack = now - lastTrackMillis > TRACK_REFRESH_MS
+                val (details, track) = withContext(Dispatchers.Default) {
+                    val details = sky.details(satellite, observer, now)
+                    val track = if (refreshTrack) {
+                        sky.track(satellite, observer, now - TRACK_PAST_MS, now + TRACK_FUTURE_MS, TRACK_STEP_S)
+                    } else null
+                    details to track
+                }
+                if (track != null) lastTrackMillis = now
+                update(details, track)
+            }
+            delay(DETAILS_INTERVAL_MS)
         }
     }
 
@@ -153,8 +204,8 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
         locationTracker.stop()
     }
 
-    private companion object {
-        const val TAG = "SkyViewModel"
+    companion object {
+        private const val TAG = "SkyViewModel"
         const val SNAPSHOT_INTERVAL_MS = 2000L
         /** Slightly below the horizon so rising satellites are ready when they clear it. */
         const val SNAPSHOT_MIN_ELEVATION_DEG = -2.0
@@ -169,5 +220,8 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
         const val TRACK_PAST_MS = 5 * 60_000L
         const val TRACK_FUTURE_MS = 15 * 60_000L
         const val TRACK_STEP_S = 15
+
+        /** Number of distinct lock colors; must match SkyOverlayView.LOCK_COLORS. */
+        const val LOCK_PALETTE_SIZE = 6
     }
 }

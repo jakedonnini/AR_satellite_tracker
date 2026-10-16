@@ -12,6 +12,7 @@ import android.text.style.StyleSpan
 import android.graphics.Typeface
 import android.util.Log
 import android.view.View
+import android.widget.Button
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -24,10 +25,11 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.jakedonnini.sattracker.camera.CameraController
 import com.jakedonnini.sattracker.sensors.AttitudeTracker
-import com.jakedonnini.sattracker.ui.FocusState
+import com.jakedonnini.sattracker.ui.TrackedSatellite
 import com.jakedonnini.sattracker.ui.SkyOverlayView
 import com.jakedonnini.sattracker.ui.SkyViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
@@ -38,6 +40,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var overlay: SkyOverlayView
     private lateinit var hud: TextView
     private lateinit var infoCard: TextView
+    private lateinit var clearButton: Button
     private lateinit var cameraController: CameraController
     private var hudExpanded = true
 
@@ -51,6 +54,7 @@ class MainActivity : AppCompatActivity() {
         overlay = findViewById(R.id.skyOverlay)
         hud = findViewById(R.id.debugHud)
         infoCard = findViewById(R.id.infoCard)
+        clearButton = findViewById(R.id.clearSelection)
         cameraController = CameraController(this)
 
         overlay.frameSource = {
@@ -60,10 +64,13 @@ class MainActivity : AppCompatActivity() {
                     snapshot = viewModel.snapshot.value,
                     fov = cameraController.fov.value,
                     focus = viewModel.focus.value,
+                    locked = viewModel.locked.value,
                 )
             }
         }
         overlay.onFocusChanged = viewModel::setFocus
+        overlay.onSatelliteTapped = viewModel::toggleLock
+        clearButton.setOnClickListener { viewModel.clearLocks() }
         hud.setOnClickListener { hudExpanded = !hudExpanded }
         // Debug: long-press the HUD to A/B the raw compass-driven attitude against the fused one.
         hud.setOnLongClickListener {
@@ -117,7 +124,10 @@ class MainActivity : AppCompatActivity() {
     private fun observeState() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                launch { viewModel.focus.collect(::renderInfoCard) }
+                launch {
+                    combine(viewModel.focus, viewModel.locked) { focus, locked -> focus to locked }
+                        .collect { (focus, locked) -> renderSelection(focus, locked) }
+                }
                 launch {
                     var ticks = 0
                     while (true) {
@@ -134,14 +144,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun renderInfoCard(focus: FocusState?) {
-        if (focus == null) {
+    /**
+     * The info card shows the focused satellite, or the most recently locked one when nothing
+     * is under the reticle. The clear button shows whenever anything is locked.
+     */
+    private fun renderSelection(focus: TrackedSatellite?, locked: List<TrackedSatellite>) {
+        clearButton.visibility = if (locked.isEmpty()) View.GONE else View.VISIBLE
+        clearButton.text = getString(R.string.clear_selection, locked.size)
+
+        // Prefer the locked copy of the focused satellite: it carries the color slot.
+        val shown = focus?.let { f -> locked.firstOrNull { it.satellite.noradId == f.satellite.noradId } ?: f }
+            ?: locked.lastOrNull()
+        if (shown == null) {
             infoCard.visibility = View.GONE
             return
         }
-        val sat = focus.satellite
-        val d = focus.details
+        val sat = shown.satellite
+        val d = shown.details
+        val color = shown.colorSlot?.let { SkyOverlayView.LOCK_COLORS[it % SkyOverlayView.LOCK_COLORS.size] }
         infoCard.text = SpannableStringBuilder().apply {
+            if (color != null) inSpans(ForegroundColorSpan(color), RelativeSizeSpan(1.3f)) { append("● ") }
             inSpans(StyleSpan(Typeface.BOLD), RelativeSizeSpan(1.3f)) { append(sat.name) }
             append("\n")
             inSpans(ForegroundColorSpan(0xFFB0B0B0.toInt())) {
@@ -153,6 +175,10 @@ class MainActivity : AppCompatActivity() {
                 append("Altitude  %,.0f km     Range  %,.0f km\n".format(d.altitudeKm, d.rangeKm))
                 append("Speed     %.2f km/s   %s\n".format(d.speedKmS, if (d.rising) "↑ rising" else "↓ setting"))
                 append("Az %.1f°   El %.1f°".format(d.azimuthDeg, d.elevationDeg))
+            }
+            append("\n")
+            inSpans(ForegroundColorSpan(0xFF909090.toInt()), RelativeSizeSpan(0.85f)) {
+                append(if (color != null) "Locked · tap it to release" else "Tap to lock and track")
             }
         }
         infoCard.visibility = View.VISIBLE

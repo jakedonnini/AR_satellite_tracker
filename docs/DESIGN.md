@@ -29,6 +29,7 @@ The app now launches into a live camera preview with a debug HUD that shows ever
 | AR overlay | ✅ | Dots for about 780 satellites above the horizon, a horizon line and compass points, a center reticle. Positions are extrapolated with velocity every display frame. |
 | Focus + info | ✅ | The reticle picks the closest satellite within 3° (kept until 5°, with a 1° switch margin). Its dot grows and gets a name label. The info card shows altitude, range, speed, rising/setting and az/el. Checked on device: Starlink at 484 km, 7.63 km/s. |
 | Orbit path | ✅ | The focused satellite's track from −5 to +15 min at 15 s steps: past dashed, future solid with one-minute ticks, clipped at the horizon. |
+| Lock + track | ✅ | Tapping a marker (36 dp hit radius) locks it; tapping again releases it. Each locked satellite gets one of 6 colors that stay distinct from the amber focus color, and keeps its dot, label and orbit path in that color while you pan around. Off-screen or behind-camera locks show a colored edge arrow pointing the way to turn (dimmed with "below horizon" once it sets). A translucent "Clear selection (N)" button appears while anything is locked. The info card shows the focused satellite, or else the most recently locked one. Confirmed on device by locking two satellites and panning away. |
 
 **Sky pass cost (Pixel 6 Pro):** a full SGP4 pass over 16k satellites takes about 1.0–1.8 s. It now runs every 20 s with a −10° mask to find candidates (about 1,600). The 2 s pass propagates only those candidates, in about 100 ms.
 
@@ -219,7 +220,7 @@ The active LEO catalog is about 16k objects (mostly Starlink), and running SGP4 
 1. 🟡 **Pointing.** `AttitudeTracker` with rotation vector + declination, plus a debug HUD showing boresight az/el. *Done; still to do: a night-sky check against Polaris and the Moon.*
 2. ✅ **Catalog.** Room cache, LEO filter, refresh policy. *(Group tagging is deferred to the filters work.)*
 3. ✅ **Overlay.** CameraX preview, FOV, ARCore/SceneView dropped, projected markers, horizon.
-4. 🟡 **Interaction.** ✅ Reticle lock, info card, orbit track. ⬜ Tap to select.
+4. ✅ **Interaction.** Reticle focus, info card, orbit track, tap to lock multiple satellites with per-satellite colors, edge arrows, clear button.
 5. **Polish.** Sunlit/visible classification, filters, calibration UX, trimmed Orekit data.
 
 ## 12. Open questions for review

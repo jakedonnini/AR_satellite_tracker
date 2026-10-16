@@ -53,6 +53,21 @@ class Projector(
         )
     }
 
+    /**
+     * Which way to turn toward a direction, as a screen-space vector (x right, y down),
+     * ignoring perspective. Works even when the direction is behind the camera, which is what
+     * off-screen indicators need. Returns (0, 0) when it's exactly on the camera axis.
+     */
+    fun screenDirection(trueEnu: Enu): ScreenPoint {
+        val e = trueEnu.e * cosD - trueEnu.n * sinD
+        val n = trueEnu.n * cosD + trueEnu.e * sinD
+        val u = trueEnu.u
+        val r = rotation
+        val dx = r[0] * e + r[3] * n + r[6] * u
+        val dy = r[1] * e + r[4] * n + r[7] * u
+        return ScreenPoint(dx.toFloat(), (-dy).toFloat())
+    }
+
     /** Radius in pixels of a cone of [angleDeg] around the view center. */
     fun radiusPx(angleDeg: Double): Float = (focalPx * tan(Math.toRadians(angleDeg))).toFloat()
 
