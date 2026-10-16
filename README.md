@@ -22,7 +22,7 @@ app/src/main/java/com/jakedonnini/sattracker/
 ├── camera/     CameraX preview + field of view
 ├── sensors/    Fused location, rotation-vector attitude
 ├── ar/         Sky → pixel projection, focus selection
-└── ui/         SkyViewModel, AR overlay view, theme
+└── ui/         SkyViewModel, AR overlay view
 app/src/main/assets/orekit-data/   Orekit reference data (leap seconds, EOP, ephemerides)
 docs/                              Design docs
 ```

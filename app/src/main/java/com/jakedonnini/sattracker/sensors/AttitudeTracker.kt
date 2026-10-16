@@ -31,7 +31,6 @@ data class Attitude(
     val magnetometerAccuracy: Int,
     val mode: AttitudeTracker.Mode,
     val jitterDeg: Double?,
-    val timestampNanos: Long,
 )
 
 /**
@@ -108,17 +107,17 @@ class AttitudeTracker(private val sensorManager: SensorManager) : SensorEventLis
                     ?.takeIf { it >= 0f }
                     ?.let { Math.toDegrees(it.toDouble()) }
                 latestGame?.let { fusion.onAbsolute(rAbs, it, event.timestamp) }
-                if (mode == Mode.RAW) publish(rAbs, event.timestamp)
+                if (mode == Mode.RAW) publish(rAbs)
             }
             Sensor.TYPE_GAME_ROTATION_VECTOR -> {
                 val rGame = rotationFrom(event)
                 latestGame = rGame
-                if (mode == Mode.FUSED) fusion.fuse(rGame)?.let { publish(it, event.timestamp) }
+                if (mode == Mode.FUSED) fusion.fuse(rGame)?.let { publish(it) }
             }
         }
     }
 
-    private fun publish(r: FloatArray, timestampNanos: Long) {
+    private fun publish(r: FloatArray) {
         val declination = declinationDeg
         val boresightEnu = SkyMath.cameraBoresight(r)
         _attitude.value = Attitude(
@@ -129,7 +128,6 @@ class AttitudeTracker(private val sensorManager: SensorManager) : SensorEventLis
             magnetometerAccuracy = magnetometerAccuracy,
             mode = mode,
             jitterDeg = jitter.add(boresightEnu.unit()),
-            timestampNanos = timestampNanos,
         )
     }
 

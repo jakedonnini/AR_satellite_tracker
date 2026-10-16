@@ -78,7 +78,7 @@ Decided 2026-10-15. ARCore and SceneView have been removed, and the camera now r
 
 | | **A. Sensor AR (recommended)** | **B. ARCore / SceneView (current deps)** |
 |---|---|---|
-| How | CameraX preview, plus the `TYPE_ROTATION_VECTOR` sensor (gyro + accel + mag fused by the OS), plus our own projection math, drawn on a Compose `Canvas` overlay | ARCore session for camera and tracking, with satellites placed as 3D nodes |
+| How | CameraX preview, plus the `TYPE_ROTATION_VECTOR` sensor (gyro + accel + mag fused by the OS), plus our own projection math, drawn by a custom `View` on a `Canvas` | ARCore session for camera and tracking, with satellites placed as 3D nodes |
 | Sky at night | ✅ Unaffected | ❌ ARCore's visual tracking needs texture. A dark or featureless sky loses tracking. |
 | North reference | Compass + declination (we have to handle it either way) | ARCore's yaw is arbitrary, so it **still** needs the compass to align to north. Geospatial API heading needs street-level imagery, not sky. |
 | Depth | Not needed (satellites are effectively at infinity, so this is pure rotation) | Gives 6-DoF, which we don't need |
@@ -105,7 +105,7 @@ CelesTrak ─▶│ TleRemote    │────▶│ SatelliteRepo   │◀─
  CameraX ─▶ preview + intrinsics ─────▶│ Projector (ar/)     │  ENU → device → pixel
                                        └──────────┬──────────┘
                                                   ▼
-                                   SkyViewModel (StateFlow) ─▶ Compose UI (overlay, info card)
+                                   SkyViewModel (StateFlow) ─▶ SkyOverlayView + info card (Views)
 ```
 
 **Package layout** (single `:app` module; split modules later only if build times hurt):
@@ -118,7 +118,7 @@ com.jakedonnini.sattracker
 ├── geometry/  pure ENU / az-el math
 ├── camera/    CameraX preview + field of view
 ├── ar/        Projector (sky → pixels), FocusSelector
-└── ui/        SkyViewModel, SkyOverlayView, theme
+└── ui/        SkyViewModel, SkyOverlayView
 ```
 
 The pointing and projection math lives in plain Kotlin classes with no Android dependencies, so it can be unit-tested on the JVM.

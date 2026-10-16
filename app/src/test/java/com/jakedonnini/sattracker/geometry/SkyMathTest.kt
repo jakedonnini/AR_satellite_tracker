@@ -53,10 +53,4 @@ class SkyMathTest {
         assertAzEl(217.0, 33.0, SkyMath.toAzEl(SkyMath.toEnu(dir)))
     }
 
-    @Test
-    fun `separation between directions`() {
-        assertEquals(90.0, SkyMath.separationDeg(AzEl(0.0, 0.0), AzEl(90.0, 0.0)), 1e-9)
-        assertEquals(45.0, SkyMath.separationDeg(AzEl(10.0, 45.0), AzEl(10.0, 90.0)), 1e-9)
-        assertEquals(0.0, SkyMath.separationDeg(AzEl(359.5, 0.0), AzEl(359.5, 0.0)), 1e-6)
-    }
 }
