@@ -9,12 +9,14 @@ import com.jakedonnini.sattracker.SatTrackerApp
 import com.jakedonnini.sattracker.data.SatelliteInfo
 import com.jakedonnini.sattracker.data.SatelliteInfoRepository
 import com.jakedonnini.sattracker.ar.OverlayGeometry
+import com.jakedonnini.sattracker.orbit.AlignTarget
 import com.jakedonnini.sattracker.orbit.Observer
 import com.jakedonnini.sattracker.orbit.OrekitInitializer
 import com.jakedonnini.sattracker.orbit.Satellite
 import com.jakedonnini.sattracker.orbit.SatelliteDetails
 import com.jakedonnini.sattracker.orbit.SkyModel
 import com.jakedonnini.sattracker.orbit.SkySnapshot
+import com.jakedonnini.sattracker.orbit.SkyTargets
 import com.jakedonnini.sattracker.orbit.TrackPoint
 import com.jakedonnini.sattracker.sensors.AttitudeTracker
 import com.jakedonnini.sattracker.sensors.LocationTracker
@@ -308,6 +310,16 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
             }
             delay(DETAILS_INTERVAL_MS)
         }
+    }
+
+    /** Built on first use, after Orekit's data is loaded (it reads the planetary ephemeris). */
+    private val skyTargets by lazy { SkyTargets() }
+
+    /** The Moon's position right now, or null until GPS and orbit data are ready. */
+    suspend fun moon(): AlignTarget? {
+        val observer = observer() ?: return null
+        if (_skyModel.value == null) return null
+        return withContext(Dispatchers.Default) { skyTargets.position("Moon", observer, System.currentTimeMillis()) }
     }
 
     private fun observer(): Observer? =

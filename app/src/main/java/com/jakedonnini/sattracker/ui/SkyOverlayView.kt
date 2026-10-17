@@ -62,6 +62,14 @@ class SkyOverlayView @JvmOverloads constructor(
     /** A satellite marker was tapped. */
     var onSatelliteTapped: ((Satellite) -> Unit)? = null
 
+    /**
+     * The Moon's true direction (null when below the horizon). Its marker is drawn where the
+     * current heading puts it, so the gap to the real Moon in the camera shows the heading error.
+     */
+    var moonMarker: Enu? = null
+    /** While aligning, the Moon marker is emphasized and an edge arrow points to it when off screen. */
+    var aligning = false
+
     private val focusSelector = FocusSelector()
     private var focusedSince = 0L
 
@@ -135,6 +143,7 @@ class SkyOverlayView @JvmOverloads constructor(
     private val focusDotPaint = fill(FOCUS_COLOR)
     private val focusRingPaint = stroke(FOCUS_COLOR, 2f)
     private val reticlePaint = stroke(Color.argb(160, 255, 255, 255), 1.5f)
+    private val alignPaint = stroke(ALIGN_COLOR, 2f)
     private val horizonPaint = stroke(Color.argb(140, 120, 220, 140), 1.5f)
     private val cardinalPaint = text(Color.argb(200, 120, 220, 140), 16f)
     private val labelPaint = text(Color.WHITE, 15f).apply { setShadowLayer(4 * dp, 0f, 0f, Color.BLACK) }
@@ -296,6 +305,8 @@ class SkyOverlayView @JvmOverloads constructor(
         // Reticle: the circle a satellite must enter to take focus.
         canvas.drawCircle(w / 2, h / 2, projector.radiusPx(focusSelector.enterDeg), reticlePaint)
 
+        moonMarker?.let { drawMoonMarker(canvas, projector, it) }
+
         // Hole: a locked satellite in the reticle gets a clear window onto the camera feed.
         val holeTracked = focusLocked
         val holePos = newFocusId?.let { lockedPositions[it] }
@@ -376,6 +387,28 @@ class SkyOverlayView @JvmOverloads constructor(
         canvas.drawLine(cx - tickOut, cy, cx - tickIn, cy, holeRingPaint)
         canvas.drawLine(cx + tickIn, cy, cx + tickOut, cy, holeRingPaint)
         drawLabel(canvas, cx, cy, radius + 8 * dp, name)
+    }
+
+    /** Open diamond (distinct from satellite dots) on the Moon; an edge arrow only while aligning. */
+    private fun drawMoonMarker(canvas: Canvas, projector: Projector, dir: Enu) {
+        if (!projector.project(dir.e, dir.n, dir.u, pt) ||
+            pt[0] < 0f || pt[0] > width || pt[1] < 0f || pt[1] > height
+        ) {
+            if (aligning) drawEdgeArrow(canvas, projector, dir, ALIGN_COLOR, MOON_LABEL, belowHorizon = false)
+            return
+        }
+        val x = pt[0]
+        val y = pt[1]
+        alignPaint.alpha = if (aligning) 255 else PASSIVE_MOON_ALPHA
+        val r = 12 * dp
+        path.reset()
+        path.moveTo(x, y - r)
+        path.lineTo(x + r, y)
+        path.lineTo(x, y + r)
+        path.lineTo(x - r, y)
+        path.close()
+        canvas.drawPath(path, alignPaint)
+        if (aligning) drawLabel(canvas, x, y, r, MOON_LABEL)
     }
 
     private fun drawMarker(canvas: Canvas, x: Float, y: Float, color: Int, radius: Float, ringGap: Float) {
@@ -500,6 +533,10 @@ class SkyOverlayView @JvmOverloads constructor(
 
     companion object {
         val FOCUS_COLOR = Color.rgb(255, 193, 7)
+        /** Moon (heading alignment) marker. */
+        val ALIGN_COLOR = Color.rgb(90, 200, 250)
+        private const val MOON_LABEL = "Moon"
+        private const val PASSIVE_MOON_ALPHA = 140
         /** Same green as the globe's golden-zone (likely visible) satellites. */
         val VISIBLE_COLOR = Color.rgb(52, 199, 89)
         /** Globe: likely visible and inside the camera view (green + yellow). */
