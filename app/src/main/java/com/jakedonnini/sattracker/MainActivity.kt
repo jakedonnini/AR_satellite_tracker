@@ -14,6 +14,7 @@ import android.util.Log
 import android.view.View
 import android.webkit.WebView
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
@@ -23,6 +24,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.core.text.inSpans
+import androidx.core.view.isVisible
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -67,6 +69,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var loadingBar: ProgressBar
     private lateinit var openArButton: Button
     private lateinit var centerOnMeButton: Button
+    private lateinit var layersButton: Button
+    private lateinit var layersPanel: View
 
     private val closeAnalysis = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() = viewModel.closeAnalysis()
@@ -111,6 +115,25 @@ class MainActivity : AppCompatActivity() {
         openArButton.setOnClickListener { viewModel.showScreen(Screen.AR) }
         findViewById<Button>(R.id.openGlobe).setOnClickListener { viewModel.showScreen(Screen.GLOBE) }
         centerOnMeButton.setOnClickListener { globe.flyToUser() }
+        layersButton = findViewById(R.id.layersButton)
+        layersPanel = findViewById(R.id.layersPanel)
+        layersButton.setOnClickListener {
+            layersPanel.isVisible = !layersPanel.isVisible
+        }
+        val layerBoxes = listOf(R.id.layerVisibility, R.id.layerFov, R.id.layerHorizon, R.id.layerInView, R.id.layerOutOfView)
+            .map { findViewById<CheckBox>(it) }
+        val pushLayers = {
+            globe.setLayers(
+                GlobeController.Layers(
+                    visibility = layerBoxes[0].isChecked,
+                    fov = layerBoxes[1].isChecked,
+                    horizon = layerBoxes[2].isChecked,
+                    inView = layerBoxes[3].isChecked,
+                    outOfView = layerBoxes[4].isChecked,
+                )
+            )
+        }
+        layerBoxes.forEach { box -> box.setOnCheckedChangeListener { _, _ -> pushLayers() } }
         onBackPressedDispatcher.addCallback(this, backToGlobe)
         // Registered last so it runs first: Back closes the Analyze panel before anything else.
         onBackPressedDispatcher.addCallback(this, closeAnalysis)
@@ -221,6 +244,9 @@ class MainActivity : AppCompatActivity() {
         loadingPanel.visibility = if (ready) View.GONE else View.VISIBLE
         openArButton.visibility = if (state.done) View.VISIBLE else View.GONE
         centerOnMeButton.visibility = if (ready) View.VISIBLE else View.GONE
+        layersButton.visibility = if (ready) View.VISIBLE else View.GONE
+        // The page may have loaded after the user changed layers; make sure it has them.
+        if (ready) globe.resendLayers()
         globeTitle.visibility = if (ready) View.VISIBLE else View.GONE
         viewModel.skyModel.value?.let { sky ->
             // Title plus a colour legend for the likely-visible tiers (design doc §12.3).

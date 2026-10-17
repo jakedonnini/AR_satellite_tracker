@@ -5,10 +5,16 @@
     <string name="open_ar">AR camera</string>
     <string name="center_on_me">Center on me</string>
     <string name="globe_title">%1$,d LEO satellites</string>
-    <string name="legend_visible">Likely visible (sunlit over a dark sky)</string>
+    <string name="legend_visible">Likely visible (brighter = easier to see)</string>
     <string name="legend_visible_in_view">Likely visible, in your camera view</string>
     <string name="analyze">Analyze</string>
     <string name="analyze_named">Analyze %1$s</string>
     <string name="close">Close</string>
     <string name="analysis_image_description">Photo of the satellite or its constellation</string>
+    <string name="layers">Layers</string>
+    <string name="layer_visibility">Likely visible (green)</string>
+    <string name="layer_fov">Camera view (FOV cone)</string>
+    <string name="layer_horizon">Horizon wall</string>
+    <string name="layer_in_view">Satellites in view</string>
+    <string name="layer_out_of_view">Satellites out of view</string>
 </resources>

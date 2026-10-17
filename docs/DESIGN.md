@@ -239,6 +239,20 @@ The active LEO catalog is about 16k objects (mostly Starlink), and running SGP4 
    - **Bottom stack:** details or loading, then the **screen toggle**, in the same spot, size and style on both screens ("AR camera" / "Globe").
    - Locks are shared both ways because both screens read the same `SkyViewModel`.
 
+### 11.1a Visibility gradient and layers (2026-10-17)
+- **Green gradient:** golden-zone ("likely visible") satellites are shaded from dull to bright green by how easy they are to see for someone standing beneath them. The score is
+  `brightness × (0.5 + 0.5 × darkness)`, where:
+  - **brightness** maps the estimated overhead magnitude (§12.2: 1000-km magnitude by name, altitude range, diffuse-sphere phase) from magnitude 6 to 1 down to magnitude 2;
+  - **darkness** maps the Sun's elevation at that ground point from −6° (just dark enough) to −18° (fully dark).
+  Orange (likely visible and in the camera view) uses the same gradient.
+- **Layers menu:** a **Layers** button under Center on me opens a dropdown of checkboxes, all on by default:
+  - **Likely visible (green):** when off, those satellites fall back to their normal tier and the green twilight band on the ground is hidden too.
+  - **Camera view (FOV cone).**
+  - **Horizon wall** (the visibility wall).
+  - **Satellites in view:** above the horizon, cyan and yellow.
+  - **Satellites out of view:** dim.
+  Green satellites stay visible even when their normal tier is hidden, so turning everything else off leaves just the likely-visible sky. Choices reset to all-on at launch.
+
 ### 11.2 Rendering: globe.gl in a WebView
 
 | Option | Verdict |
