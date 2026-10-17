@@ -20,7 +20,7 @@
         <item name="android:textSize">14sp</item>
     </style>
 
-    <!-- Globe ⇄ AR toggle: identical on both screens so it never moves. -->
+    <!-- Globe / AR toggle: identical on both screens so it never moves. -->
     <style name="ScreenToggleButton" parent="OverlayButton">
         <item name="android:layout_height">48dp</item>
         <item name="android:paddingStart">28dp</item>
