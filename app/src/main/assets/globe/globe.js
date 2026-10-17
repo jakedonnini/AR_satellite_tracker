@@ -1,10 +1,14 @@
-// Globe screen: Earth, every LEO satellite, the user's visibility wall and camera view pyramid, and
-// locked satellites. Satellites are drawn in three tiers: dim (not visible from the user), cyan
-// (above the user's horizon), yellow (inside the camera's view).
+// Globe screen: a day/night Earth lit by the real Sun, every LEO satellite, the user's visibility
+// wall and camera view pyramid, and locked satellites. Satellites are coloured by tier:
+//   green  — golden zone: sunlit, over ground where the Sun is > 6° below the horizon (anyone
+//            beneath it has it in their naked-eye window; design doc §12.3). Overrides the rest.
+//   orange — golden zone *and* inside the user's camera view (green + yellow).
+//   yellow — inside the user's camera view;  cyan — above the user's horizon;  dim — everything else.
 //
 // Data comes from the app:
 //   GET /api/catalog    → { ids: [...], names: [...] }            (once, same order as positions)
-//   GET /api/positions  → Float64 epochMillis, then Float32 [x,y,z,vx,vy,vz] per satellite
+//   GET /api/positions  → Float64 epochMillis, Float64 sun direction xyz (unit, ECEF),
+//                         then Float32 [x,y,z,vx,vy,vz] per satellite
 //                         (Earth-fixed, km and km/s; NaN = could not propagate)
 //   SatGlobe.setPose({ obs, up, dirs, lat, lon })   ← ~10 Hz from Kotlin (ECEF km / unit vectors)
 //   SatGlobe.setLocked([{ id, name, color, path }]) ← when locks change / paths refresh
@@ -20,8 +24,47 @@
   const LEO_TOP_KM = 2000;       // top of LEO: sizes the visibility wall
   const POLL_MS = 5000;
 
+  // Day/night globe: blend Blue Marble (day) and city lights (night) by the local Sun elevation,
+  // with a faint green wash on the ground where the Sun is 6–18° below the horizon (the band the
+  // green golden-zone satellites sit over).
+  const SIN_6 = Math.sin(6 * Math.PI / 180);
+  const textures = new THREE.TextureLoader();
+  function srgb(t) { t.colorSpace = THREE.SRGBColorSpace; return t; }
+  const globeUniforms = {
+    uDay: { value: srgb(textures.load('img/earth-blue-marble.jpg')) },
+    uNight: { value: srgb(textures.load('img/earth-night.jpg')) },
+    uSunDir: { value: new THREE.Vector3(1, 0, 0) },   // three.js axes
+  };
+  const globeMaterial = new THREE.ShaderMaterial({
+    uniforms: globeUniforms,
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vNormalW;
+      void main() {
+        vUv = uv;
+        vNormalW = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform sampler2D uDay;
+      uniform sampler2D uNight;
+      uniform vec3 uSunDir;
+      varying vec2 vUv;
+      varying vec3 vNormalW;
+      void main() {
+        float c = dot(normalize(vNormalW), normalize(uSunDir)); // sin(Sun elevation) here
+        vec3 day = texture2D(uDay, vUv).rgb;
+        vec3 night = texture2D(uNight, vUv).rgb * 1.15;
+        vec3 col = mix(night, day, smoothstep(-0.08, 0.08, c));
+        float golden = smoothstep(-0.33, -0.29, c) * (1.0 - smoothstep(-0.12, -0.09, c));
+        col += vec3(0.2, 0.78, 0.35) * 0.05 * golden;                              // sky-dark band
+        gl_FragColor = vec4(col, 1.0);
+        #include <colorspace_fragment>
+      }`,
+  });
+
   const world = new Globe(document.getElementById('globe'), { animateIn: false })
-    .globeImageUrl('img/earth-blue-marble.jpg')
+    .globeMaterial(globeMaterial)
     .backgroundImageUrl('img/night-sky.png')
     .showAtmosphere(true)
     .atmosphereColor('#7ab8ff')
@@ -85,35 +128,51 @@
   let indexById = new Map();
   let state = null;          // Float32Array [x,y,z,vx,vy,vz]*n
   let stateEpoch = 0;
+  let sunDir = null;         // unit vector toward the Sun, ECEF
 
-  const allGeom = new THREE.BufferGeometry();
-  const allPoints = new THREE.Points(allGeom, new THREE.PointsMaterial({
-    size: 1.1, map: DOT, color: 0x9fb8d8, transparent: true, opacity: 0.75, depthWrite: false,
-  }));
-  allPoints.frustumCulled = false;
-  scene.add(allPoints);
+  // Tier styles: [r, g, b, alpha], size (world units).
+  const TIER = {
+    dim:    { c: [0.62, 0.72, 0.85, 0.75], s: 1.1 },
+    above:  { c: [0.50, 0.87, 0.92, 1.0], s: 1.6 },
+    inView: { c: [1.00, 0.84, 0.31, 1.0], s: 2.4 },
+    golden: { c: [0.20, 0.78, 0.35, 1.0], s: 1.8 },
+    goldenInView: { c: [1.00, 0.58, 0.00, 1.0], s: 2.6 },
+  };
 
-  const aboveGeom = new THREE.BufferGeometry();
-  const abovePoints = new THREE.Points(aboveGeom, new THREE.PointsMaterial({
-    size: 1.6, map: DOT, color: 0x80deea, transparent: true, depthWrite: false,
+  const satGeom = new THREE.BufferGeometry();
+  const satUniforms = { uDot: { value: DOT }, uScale: { value: 1 } };
+  const satPoints = new THREE.Points(satGeom, new THREE.ShaderMaterial({
+    uniforms: satUniforms,
+    transparent: true,
+    depthWrite: false,
+    vertexShader: `
+      attribute vec4 aColor;
+      attribute float aSize;
+      uniform float uScale;
+      varying vec4 vColor;
+      void main() {
+        vColor = aColor;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = aSize * uScale / -mv.z;   // same attenuation as PointsMaterial
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform sampler2D uDot;
+      varying vec4 vColor;
+      void main() {
+        float a = texture2D(uDot, gl_PointCoord).a * vColor.a;
+        if (a < 0.02) discard;
+        gl_FragColor = vec4(vColor.rgb, a);
+      }`,
   }));
-  abovePoints.frustumCulled = false;
-  abovePoints.renderOrder = 1;
-  abovePoints.visible = false;
-  scene.add(abovePoints);
-
-  const inViewGeom = new THREE.BufferGeometry();
-  const inViewPoints = new THREE.Points(inViewGeom, new THREE.PointsMaterial({
-    size: 2.4, map: DOT, color: 0xffd54f, transparent: true, depthWrite: false,
-  }));
-  inViewPoints.frustumCulled = false;
-  inViewPoints.renderOrder = 2;
-  inViewPoints.visible = false;
-  scene.add(inViewPoints);
+  satPoints.frustumCulled = false;
+  satPoints.renderOrder = 2;
+  scene.add(satPoints);
 
   let allPos = null;
-  let abovePos = null;
-  let inViewPos = null;
+  let colors = null;
+  let sizes = null;
+  const drawSize = new THREE.Vector2();
 
   async function loadCatalog() {
     const res = await fetch('/api/catalog', { cache: 'no-store' });
@@ -123,13 +182,11 @@
     names = cat.names;
     indexById = new Map(ids.map((id, i) => [id, i]));
     allPos = new Float32Array(ids.length * 3);
-    abovePos = new Float32Array(ids.length * 3);
-    inViewPos = new Float32Array(ids.length * 3);
-    allGeom.setAttribute('position', new THREE.BufferAttribute(allPos, 3));
-    aboveGeom.setAttribute('position', new THREE.BufferAttribute(abovePos, 3));
-    aboveGeom.setDrawRange(0, 0);
-    inViewGeom.setAttribute('position', new THREE.BufferAttribute(inViewPos, 3));
-    inViewGeom.setDrawRange(0, 0);
+    colors = new Float32Array(ids.length * 4);
+    sizes = new Float32Array(ids.length);
+    satGeom.setAttribute('position', new THREE.BufferAttribute(allPos, 3));
+    satGeom.setAttribute('aColor', new THREE.BufferAttribute(colors, 4));
+    satGeom.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
     return true;
   }
 
@@ -139,11 +196,14 @@
       const res = await fetch('/api/positions', { cache: 'no-store' });
       if (res.status !== 200) return;
       const buf = await res.arrayBuffer();
-      const epoch = new Float64Array(buf, 0, 1)[0];
-      const data = new Float32Array(buf, 8);
+      const head = new Float64Array(buf, 0, 4);
+      const epoch = head[0];
+      const data = new Float32Array(buf, 32);
       if (data.length !== ids.length * 6) { ids = null; return; } // catalog changed: reload
       state = data;
       stateEpoch = epoch;
+      sunDir = [head[1], head[2], head[3]];
+      globeUniforms.uSunDir.value.set(sunDir[1], sunDir[2], sunDir[0]);
     } catch (e) {
       console.warn('globe poll failed', e);
     } finally {
@@ -379,36 +439,51 @@
     const n = ids.length;
     const o = pose ? pose.obs : null;
     const up = pose ? pose.up : null;
-    let above = 0;
-    let inView = 0;
+    const sun = sunDir;
+    const R2 = EARTH_KM * EARTH_KM;
 
     for (let i = 0; i < n; i++) {
       const k = i * 6;
       const x = state[k] + state[k + 3] * dt;
       const y = state[k + 1] + state[k + 4] * dt;
       const z = state[k + 2] + state[k + 5] * dt;
-      if (Number.isNaN(x)) { allPos[i * 3] = allPos[i * 3 + 1] = allPos[i * 3 + 2] = 0; continue; }
+      if (Number.isNaN(x)) {
+        allPos[i * 3] = allPos[i * 3 + 1] = allPos[i * 3 + 2] = 0;
+        sizes[i] = 0;
+        continue;
+      }
       setThree(allPos, i * 3, x, y, z);
 
+      let tier = TIER.dim;
+      let inView = false;
       if (planes) {
-        const r = [x - o[0], y - o[1], z - o[2]];
-        if (dot(r, up) <= 0) continue;                          // below the user's horizon
-        setThree(abovePos, above * 3, x, y, z);
-        above++;
-        if (dot(r, r) > FAR_KM * FAR_KM) continue;              // out of range
-        if (dot(r, planes[0]) < 0 || dot(r, planes[1]) < 0 ||
-            dot(r, planes[2]) < 0 || dot(r, planes[3]) < 0) continue;
-        setThree(inViewPos, inView * 3, x, y, z);
-        inView++;
+        const rx = x - o[0], ry = y - o[1], rz = z - o[2];
+        if (rx * up[0] + ry * up[1] + rz * up[2] > 0) {             // above the user's horizon
+          tier = TIER.above;
+          const r = [rx, ry, rz];
+          if (dot(r, r) <= FAR_KM * FAR_KM &&
+              dot(r, planes[0]) >= 0 && dot(r, planes[1]) >= 0 &&
+              dot(r, planes[2]) >= 0 && dot(r, planes[3]) >= 0) {
+            tier = TIER.inView;
+            inView = true;
+          }
+        }
       }
+      if (sun) {
+        const along = x * sun[0] + y * sun[1] + z * sun[2];
+        const r2 = x * x + y * y + z * z;
+        const sunlit = along >= 0 || r2 - along * along > R2;          // outside Earth's shadow
+        // Sun elevation at the ground point beneath the satellite: sin(el) = (p̂ · sun).
+        if (sunlit && along / Math.sqrt(r2) < -SIN_6) tier = inView ? TIER.goldenInView : TIER.golden;
+      }
+      colors.set(tier.c, i * 4);
+      sizes[i] = tier.s;
     }
-    allGeom.attributes.position.needsUpdate = true;
-    aboveGeom.setDrawRange(0, above);
-    aboveGeom.attributes.position.needsUpdate = true;
-    abovePoints.visible = above > 0;
-    inViewGeom.setDrawRange(0, inView);
-    inViewPoints.visible = inView > 0; // drawing an empty range makes WebGL log warnings
-    inViewGeom.attributes.position.needsUpdate = true;
+    satGeom.attributes.position.needsUpdate = true;
+    satGeom.attributes.aColor.needsUpdate = true;
+    satGeom.attributes.aSize.needsUpdate = true;
+    world.renderer().getDrawingBufferSize(drawSize);
+    satUniforms.uScale.value = drawSize.y * 0.5;
 
     for (const l of locked) {
       const i = indexById.get(l.id);
@@ -427,9 +502,6 @@
       if (!p) {
         planes = null;
         userMarker.visible = pyramid.visible = edges.visible = fence.visible = false;
-        abovePoints.visible = false;
-        inViewGeom.setDrawRange(0, 0);
-        inViewPoints.visible = false;
         return;
       }
       updatePyramid();

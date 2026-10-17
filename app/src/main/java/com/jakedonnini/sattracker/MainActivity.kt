@@ -28,13 +28,17 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.jakedonnini.sattracker.ar.Projector
 import com.jakedonnini.sattracker.camera.CameraController
+import com.jakedonnini.sattracker.orbit.NakedEye
+import com.jakedonnini.sattracker.orbit.Visibility
 import com.jakedonnini.sattracker.sensors.AttitudeTracker
+import com.jakedonnini.sattracker.ui.AnalysisPanel
 import com.jakedonnini.sattracker.ui.GlobeController
 import com.jakedonnini.sattracker.ui.LoadingState
 import com.jakedonnini.sattracker.ui.Screen
 import com.jakedonnini.sattracker.ui.SkyOverlayView
 import com.jakedonnini.sattracker.ui.SkyViewModel
 import com.jakedonnini.sattracker.ui.TrackedSatellite
+import com.jakedonnini.sattracker.ui.VerticalSlider
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
@@ -48,6 +52,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var hud: TextView
     private lateinit var infoCard: TextView
     private lateinit var clearButton: Button
+    private lateinit var analyzeButton: Button
+    private lateinit var zoomSlider: VerticalSlider
+    private lateinit var analysisPanel: AnalysisPanel
     private lateinit var cameraController: CameraController
     private var hudExpanded = true
 
@@ -60,6 +67,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var loadingBar: ProgressBar
     private lateinit var openArButton: Button
     private lateinit var centerOnMeButton: Button
+
+    private val closeAnalysis = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() = viewModel.closeAnalysis()
+    }
 
     /** On the AR screen, Back returns to the globe instead of leaving the app. */
     private val backToGlobe = object : OnBackPressedCallback(false) {
@@ -77,6 +88,11 @@ class MainActivity : AppCompatActivity() {
         hud = findViewById(R.id.debugHud)
         infoCard = findViewById(R.id.infoCard)
         clearButton = findViewById(R.id.clearSelection)
+        analyzeButton = findViewById(R.id.analyzeButton)
+        analysisPanel = AnalysisPanel(findViewById(android.R.id.content)) { viewModel.closeAnalysis() }
+        analyzeButton.setOnClickListener {
+            viewModel.focus.value?.satellite?.let(viewModel::analyze)
+        }
         cameraController = CameraController(this)
         arLayer = findViewById(R.id.arLayer)
         globeLayer = findViewById(R.id.globeLayer)
@@ -96,6 +112,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.openGlobe).setOnClickListener { viewModel.showScreen(Screen.GLOBE) }
         centerOnMeButton.setOnClickListener { globe.flyToUser() }
         onBackPressedDispatcher.addCallback(this, backToGlobe)
+        // Registered last so it runs first: Back closes the Analyze panel before anything else.
+        onBackPressedDispatcher.addCallback(this, closeAnalysis)
 
         overlay.frameSource = {
             viewModel.attitudeTracker.attitude.value?.let { attitude ->
@@ -109,6 +127,16 @@ class MainActivity : AppCompatActivity() {
             }
         }
         overlay.onFocusChanged = viewModel::setFocus
+        overlay.magnifier = cameraController.magnifier
+        zoomSlider = findViewById(R.id.zoomSlider)
+        zoomSlider.topLabel = "%.0fx".format(MAX_ZOOM)
+        zoomSlider.bottomLabel = "1x"
+        zoomSlider.onValueChanged = { setZoom(it) }
+        overlay.onHoleChanged = { open ->
+            // Fresh at 1x each time the hole opens, so the view never starts out zoomed.
+            setZoom(0f)
+            zoomSlider.visibility = if (open) View.VISIBLE else View.GONE
+        }
         overlay.onSatelliteTapped = viewModel::toggleLock
         clearButton.setOnClickListener { viewModel.clearLocks() }
         hud.setOnClickListener { hudExpanded = !hudExpanded }
@@ -153,6 +181,14 @@ class MainActivity : AppCompatActivity() {
         startLocationIfPermitted()
     }
 
+    /** Slider position 0..1 → zoom 1x..MAX_ZOOM, exponential so each step feels the same. */
+    private fun setZoom(position: Float) {
+        zoomSlider.value = position
+        val zoom = Math.pow(MAX_ZOOM, position.toDouble()).toFloat()
+        overlay.zoom = zoom
+        zoomSlider.valueLabel = if (position > 0.01f) "%.1fx".format(zoom) else ""
+    }
+
     private fun startCameraIfPermitted() {
         if (hasPermission(Manifest.permission.CAMERA)) cameraController.start(this, previewView)
     }
@@ -186,7 +222,18 @@ class MainActivity : AppCompatActivity() {
         openArButton.visibility = if (state.done) View.VISIBLE else View.GONE
         centerOnMeButton.visibility = if (ready) View.VISIBLE else View.GONE
         globeTitle.visibility = if (ready) View.VISIBLE else View.GONE
-        viewModel.skyModel.value?.let { globeTitle.text = getString(R.string.globe_title, it.size) }
+        viewModel.skyModel.value?.let { sky ->
+            // Title plus a colour legend for the likely-visible tiers (design doc §12.3).
+            globeTitle.text = SpannableStringBuilder().apply {
+                append(getString(R.string.globe_title, sky.size))
+                append("\n")
+                inSpans(ForegroundColorSpan(SkyOverlayView.VISIBLE_COLOR)) { append("● ") }
+                inSpans(RelativeSizeSpan(0.9f)) { append(getString(R.string.legend_visible)) }
+                append("\n")
+                inSpans(ForegroundColorSpan(SkyOverlayView.VISIBLE_IN_VIEW_COLOR)) { append("● ") }
+                inSpans(RelativeSizeSpan(0.9f)) { append(getString(R.string.legend_visible_in_view)) }
+            }
+        }
     }
 
     /** Sends the user's position and live camera view to the globe (~10 Hz while it's showing). */
@@ -226,6 +273,13 @@ class MainActivity : AppCompatActivity() {
                         .collect { (focus, locked) -> renderSelection(focus, locked) }
                 }
                 launch { viewModel.screen.collect(::applyScreen) }
+                launch {
+                    combine(viewModel.analysis, viewModel.locked) { state, locked -> state to locked }
+                        .collect { (state, locked) ->
+                            analysisPanel.render(state, locked.firstOrNull { it.satellite.noradId == state?.satellite?.noradId })
+                            closeAnalysis.isEnabled = state != null
+                        }
+                }
                 launch { viewModel.loading.collect(::renderLoading) }
                 launch {
                     combine(viewModel.locked, viewModel.lockedOrbits) { locked, orbits -> locked to orbits }
@@ -259,6 +313,10 @@ class MainActivity : AppCompatActivity() {
      */
     private fun renderSelection(focus: TrackedSatellite?, locked: List<TrackedSatellite>) {
         clearButton.visibility = if (locked.isEmpty()) View.GONE else View.VISIBLE
+        // Analyze is offered for a locked satellite that's in the reticle.
+        val focusLocked = focus != null && locked.any { it.satellite.noradId == focus.satellite.noradId }
+        analyzeButton.visibility = if (focusLocked) View.VISIBLE else View.GONE
+        if (focusLocked) analyzeButton.text = getString(R.string.analyze_named, focus!!.satellite.name)
         clearButton.text = getString(R.string.clear_selection, locked.size)
 
         // Prefer the locked copy of the focused satellite: it carries the color slot.
@@ -283,7 +341,16 @@ class MainActivity : AppCompatActivity() {
                 append("\n\n")
                 append("Altitude  %,.0f km     Range  %,.0f km\n".format(d.altitudeKm, d.rangeKm))
                 append("Speed     %.2f km/s   %s\n".format(d.speedKmS, if (d.rising) "↑ rising" else "↓ setting"))
-                append("Az %.1f°   El %.1f°".format(d.azimuthDeg, d.elevationDeg))
+                append("Az %.1f°   El %.1f°\n".format(d.azimuthDeg, d.elevationDeg))
+                val v = d.visibility
+                val (text, tint) = when (v.status) {
+                    NakedEye.LIKELY_VISIBLE -> "Likely visible · mag %.1f".format(v.magnitude) to SkyOverlayView.VISIBLE_COLOR
+                    NakedEye.TOO_FAINT -> "Too faint to see · mag %.1f".format(v.magnitude) to 0xFFB0B0B0.toInt()
+                    NakedEye.IN_SHADOW -> "In Earth's shadow" to 0xFFB0B0B0.toInt()
+                    NakedEye.SKY_TOO_BRIGHT -> "Sky too bright (Sun %+.0f°)".format(v.observerSunElevationDeg) to 0xFFB0B0B0.toInt()
+                    NakedEye.TOO_LOW -> "Too low to see (below 10°)" to 0xFFB0B0B0.toInt()
+                }
+                inSpans(ForegroundColorSpan(tint), StyleSpan(Typeface.BOLD)) { append(text) }
             }
             append("\n")
             inSpans(ForegroundColorSpan(0xFF909090.toInt()), RelativeSizeSpan(0.85f)) {
@@ -322,6 +389,9 @@ class MainActivity : AppCompatActivity() {
                 )
             )
         }
+        snapshot?.let {
+            appendLine("SUN     el %+.1f°  %s".format(it.sunElevationDeg, Visibility.skyCondition(it.sunElevationDeg).label))
+        }
         val fov = cameraController.fov.value
         appendLine(
             if (fov == null) "CAMERA  no FOV yet"
@@ -351,6 +421,7 @@ class MainActivity : AppCompatActivity() {
         const val TAG = "MainActivity"
         const val HUD_REFRESH_MS = 200L
         const val GLOBE_POSE_MS = 100L
+        const val MAX_ZOOM = 8.0
         /** Used until the camera's real FOV is known. */
         const val DEFAULT_LONG_FOV_DEG = 70.0
     }

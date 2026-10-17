@@ -9,7 +9,11 @@ import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -17,6 +21,8 @@ import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import android.util.Size
+import java.util.concurrent.Executors
 import kotlin.math.atan
 
 /**
@@ -28,6 +34,9 @@ data class CameraFov(val horizontalDeg: Double, val verticalDeg: Double)
 /**
  * Shows the back camera in a [PreviewView] via CameraX and reports the lens field of view,
  * which the overlay needs to project sky directions to pixels.
+ *
+ * Alongside the preview it binds a full-resolution 4:3 analysis stream for the zoom lens in
+ * the camera hole ([magnifier]); the analyzer does no work unless a zoom is requested.
  */
 class CameraController(private val context: Context) {
 
@@ -38,6 +47,9 @@ class CameraController(private val context: Context) {
 
     private var provider: ProcessCameraProvider? = null
 
+    val magnifier = Magnifier()
+    private val analysisExecutor = Executors.newSingleThreadExecutor()
+
     fun start(lifecycleOwner: LifecycleOwner, previewView: PreviewView) {
         val providerFuture = ProcessCameraProvider.getInstance(context)
         providerFuture.addListener({
@@ -45,11 +57,31 @@ class CameraController(private val context: Context) {
             val preview = Preview.Builder().build().also {
                 it.setSurfaceProvider(previewView.surfaceProvider)
             }
+            // Same 4:3 full-sensor field of view as the preview, at as high a resolution as the
+            // device streams, so the lens shows real detail rather than upscaled preview pixels.
+            val analysis = ImageAnalysis.Builder()
+                .setResolutionSelector(
+                    ResolutionSelector.Builder()
+                        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                        .setResolutionStrategy(
+                            ResolutionStrategy(Size(4032, 3024), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
+                        )
+                        .build()
+                )
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+                .also { it.setAnalyzer(analysisExecutor, magnifier) }
             try {
                 provider.unbindAll()
-                val camera = provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview)
+                val camera = try {
+                    provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                } catch (e: IllegalArgumentException) {
+                    // Device can't stream both: keep the preview, lose the zoom lens.
+                    Log.w(TAG, "Preview + analysis not supported; zoom disabled", e)
+                    provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview)
+                }
                 readFov(camera)?.let { _fov.value = it }
-                Log.d(TAG, "Camera bound, FOV: ${_fov.value}")
+                Log.d(TAG, "Camera bound, FOV: ${_fov.value}, analysis: ${analysis.resolutionInfo?.resolution}")
             } catch (e: Exception) {
                 Log.e(TAG, "Camera bind failed", e)
             }

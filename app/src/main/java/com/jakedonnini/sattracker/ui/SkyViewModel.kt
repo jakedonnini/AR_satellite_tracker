@@ -6,6 +6,8 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jakedonnini.sattracker.SatTrackerApp
+import com.jakedonnini.sattracker.data.SatelliteInfo
+import com.jakedonnini.sattracker.data.SatelliteInfoRepository
 import com.jakedonnini.sattracker.ar.OverlayGeometry
 import com.jakedonnini.sattracker.orbit.Observer
 import com.jakedonnini.sattracker.orbit.OrekitInitializer
@@ -42,6 +44,13 @@ data class TrackedSatellite(
     val track: List<TrackPoint> = emptyList(),
     /** Palette slot for a locked satellite; null for one that's only focused. */
     val colorSlot: Int? = null,
+)
+
+/** The Analyze panel: the satellite, whether its online info is still loading, and the info. */
+data class AnalysisState(
+    val satellite: Satellite,
+    val loading: Boolean,
+    val info: SatelliteInfo? = null,
 )
 
 /** Which full-screen view is showing. */
@@ -97,9 +106,14 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile var globeCatalogJson: String? = null
         private set
 
-    /** Latest `/api/positions` body: Float64 epoch millis, then Float32 ECEF state per satellite. */
+    /** Latest `/api/positions` body: Float64 epoch millis + Sun direction, then Float32 ECEF state per satellite. */
     @Volatile var globePositions: ByteArray? = null
         private set
+
+    private val infoRepository = SatelliteInfoRepository()
+    private val _analysis = MutableStateFlow<AnalysisState?>(null)
+    /** Non-null while the Analyze panel is open. */
+    val analysis: StateFlow<AnalysisState?> = _analysis.asStateFlow()
 
     @Volatile private var active = false
     private var focusJob: Job? = null
@@ -172,8 +186,10 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
                 val start = System.currentTimeMillis()
                 val snap = sky.globeSnapshot(start)
                 Log.v(TAG, "Globe pass: ${sky.size} sats in ${System.currentTimeMillis() - start} ms")
-                ByteBuffer.allocate(8 + snap.data.size * 4).order(ByteOrder.LITTLE_ENDIAN).apply {
+                // Header: Float64 epoch millis, Float64 Sun direction (unit, ECEF); then Float32 state.
+                ByteBuffer.allocate(GLOBE_HEADER_BYTES + snap.data.size * 4).order(ByteOrder.LITTLE_ENDIAN).apply {
                     putDouble(snap.epochMillis.toDouble())
+                    snap.sunDir.forEach { putDouble(it) }
                     asFloatBuffer().put(snap.data)
                 }.array()
             }
@@ -241,6 +257,21 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
                 if (it.satellite.noradId == id) it.copy(details = details, track = track ?: it.track) else it
             }
         }
+    }
+
+    /** Opens the Analyze panel and fetches the satellite's online info (cached per session). */
+    fun analyze(satellite: Satellite) {
+        _analysis.value = AnalysisState(satellite, loading = true)
+        viewModelScope.launch {
+            val info = infoRepository.fetch(satellite)
+            if (_analysis.value?.satellite?.noradId == satellite.noradId) {
+                _analysis.value = AnalysisState(satellite, loading = false, info = info)
+            }
+        }
+    }
+
+    fun closeAnalysis() {
+        _analysis.value = null
     }
 
     fun clearLocks() {
@@ -335,6 +366,7 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
         const val TRACK_FUTURE_MS = 15 * 60_000L
         const val TRACK_STEP_S = 15
         const val GLOBE_INTERVAL_MS = 5000L
+        private const val GLOBE_HEADER_BYTES = 4 * 8
         const val ORBIT_REFRESH_MS = 60_000L
 
         /** Number of distinct lock colors; must match SkyOverlayView.LOCK_COLORS. */

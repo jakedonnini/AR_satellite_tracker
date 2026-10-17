@@ -7,17 +7,23 @@ import android.graphics.Color
 import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.RectF
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
+import androidx.core.graphics.withClip
 import com.jakedonnini.sattracker.ar.FocusSelector
 import com.jakedonnini.sattracker.ar.HitTarget
 import com.jakedonnini.sattracker.ar.OverlayGeometry
 import com.jakedonnini.sattracker.ar.Projector
 import com.jakedonnini.sattracker.ar.ScreenPoint
 import com.jakedonnini.sattracker.camera.CameraFov
+import com.jakedonnini.sattracker.camera.MagnifyRequest
+import com.jakedonnini.sattracker.camera.Magnifier
 import com.jakedonnini.sattracker.geometry.AzEl
 import com.jakedonnini.sattracker.geometry.Enu
 import com.jakedonnini.sattracker.geometry.SkyMath
@@ -25,6 +31,7 @@ import com.jakedonnini.sattracker.orbit.Satellite
 import com.jakedonnini.sattracker.orbit.SkyObject
 import com.jakedonnini.sattracker.orbit.SkySnapshot
 import com.jakedonnini.sattracker.orbit.TrackPoint
+import com.jakedonnini.sattracker.orbit.Visibility
 import com.jakedonnini.sattracker.sensors.Attitude
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -58,6 +65,26 @@ class SkyOverlayView @JvmOverloads constructor(
 
     private val focusSelector = FocusSelector()
     private var focusedSince = 0L
+
+    // "Hole": when a locked satellite sits in the reticle, the overlay opens a clear window at its
+    // position so the real satellite can be seen in the camera feed, unobstructed by markers.
+    private var holeTargetId: Int? = null
+    private var holeSince = 0L
+    private val clearPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+    }
+    private val holeRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+
+    /** Zoom inside the hole (1 = none); set by the slider. Only the hole is magnified. */
+    var zoom: Float = 1f
+    /** Supplies magnified camera crops for the hole; null disables zoom. */
+    var magnifier: Magnifier? = null
+    /** Called (posted) when the hole opens or closes, so the zoom slider can show/hide. */
+    var onHoleChanged: ((Boolean) -> Unit)? = null
+    private var holeOpen = false
+    private val lensPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+    private val lensClip = Path()
+    private val lensRect = RectF()
     private val dp = resources.displayMetrics.density
 
     /** Markers drawn in the last frame, for hit-testing taps. */
@@ -75,6 +102,8 @@ class SkyOverlayView @JvmOverloads constructor(
     })
 
     private val dotPaint = fill(Color.argb(220, 230, 240, 255))
+    /** Satellites that pass every naked-eye test for the user right now (design doc §12). */
+    private val visibleDotPaint = fill(VISIBLE_COLOR).apply { setShadowLayer(4 * dp, 0f, 0f, VISIBLE_COLOR) }
     private val focusDotPaint = fill(FOCUS_COLOR)
     private val focusRingPaint = stroke(FOCUS_COLOR, 2f)
     private val reticlePaint = stroke(Color.argb(160, 255, 255, 255), 1.5f)
@@ -118,6 +147,10 @@ class SkyOverlayView @JvmOverloads constructor(
         val now = System.currentTimeMillis()
         val lockedById = frame.locked.associateBy { it.satellite.noradId }
 
+        // Draw into an offscreen layer whenever something is locked, so a hole can be cleared
+        // through everything drawn this frame (see drawHole).
+        val layer = if (frame.locked.isNotEmpty()) canvas.saveLayer(0f, 0f, w, h, null) else -1
+
         drawHorizon(canvas, projector)
 
         // Dots, plus focus candidates near the boresight and positions of locked satellites.
@@ -131,6 +164,8 @@ class SkyOverlayView @JvmOverloads constructor(
         if (snapshot != null) {
             val dt = (now - snapshot.epochMillis) / 1000.0
             val candidateCos = cos(Math.toRadians(focusSelector.exitDeg + 1.0))
+            val skyDark = snapshot.sunElevationDeg <= Visibility.DARK_SKY_SUN_ELEVATION_DEG
+            val minSinEl = kotlin.math.sin(Math.toRadians(Visibility.MIN_ELEVATION_DEG))
             for (obj in snapshot.objects) {
                 val p = obj.positionAfter(dt)
                 if (p.u <= 0) continue // below the horizon
@@ -146,7 +181,14 @@ class SkyOverlayView @JvmOverloads constructor(
                 targets += HitTarget(id, sp.x, sp.y)
                 satellites[id] = obj.satellite
                 if (id != focusedId && id !in lockedById) {
-                    canvas.drawCircle(sp.x, sp.y, DOT_RADIUS_DP * dp, dotPaint)
+                    val mag = obj.magnitude
+                    val likelyVisible = skyDark && mag != null && mag <= Visibility.NAKED_EYE_LIMIT_MAG &&
+                        unit.u >= minSinEl
+                    if (likelyVisible) {
+                        canvas.drawCircle(sp.x, sp.y, VISIBLE_DOT_RADIUS_DP * dp, visibleDotPaint)
+                    } else {
+                        canvas.drawCircle(sp.x, sp.y, DOT_RADIUS_DP * dp, dotPaint)
+                    }
                 }
             }
         }
@@ -203,6 +245,64 @@ class SkyOverlayView @JvmOverloads constructor(
 
         // Reticle: the circle a satellite must enter to take focus.
         canvas.drawCircle(w / 2, h / 2, projector.radiusPx(focusSelector.enterDeg), reticlePaint)
+
+        // Hole: a locked satellite in the reticle gets a clear window onto the camera feed.
+        val holeTracked = newFocusId?.let { lockedById[it] }
+        val holePoint = newFocusId?.let { lockedPositions[it] }?.let { projector.project(it) }
+        if (holeTracked == null || holePoint == null) {
+            holeTargetId = null
+        } else if (holeTargetId != newFocusId) {
+            holeTargetId = newFocusId
+            holeSince = now
+        }
+        val isOpen = holeTracked != null && holePoint != null
+        if (isOpen != holeOpen) {
+            holeOpen = isOpen
+            post { onHoleChanged?.invoke(isOpen) }
+        }
+        // The lens widens as you zoom in, from HOLE_RADIUS_DP at 1x to LENS_RADIUS_DP by 2x.
+        val zoomed = isOpen && zoom > 1.01f && magnifier != null
+        val fullRadius = (HOLE_RADIUS_DP + (LENS_RADIUS_DP - HOLE_RADIUS_DP) * ((zoom - 1f).coerceIn(0f, 1f))) * dp
+        val holeRadius = if (isOpen) fullRadius * min(1f, (now - holeSince) / HOLE_OPEN_MS) else 0f
+        if (holeRadius > 0f) canvas.drawCircle(holePoint!!.x, holePoint.y, holeRadius, clearPaint)
+        if (layer >= 0) canvas.restoreToCount(layer)
+
+        // Zoom lens: ask the camera for the crop under the hole, draw the latest one inside it.
+        magnifier?.request = if (zoomed) {
+            MagnifyRequest(holePoint!!.x, holePoint.y, 2 * fullRadius / zoom, w, h)
+        } else null
+        if (zoomed && holeRadius > 0f) drawLens(canvas, holePoint!!, holeRadius, now)
+
+        if (holeRadius > 0f) {
+            val color = LOCK_COLORS[(holeTracked!!.colorSlot ?: 0) % LOCK_COLORS.size]
+            drawHoleFrame(canvas, holePoint!!, holeRadius, color, holeTracked.satellite.name)
+        }
+    }
+
+    private fun drawLens(canvas: Canvas, c: ScreenPoint, radius: Float, now: Long) {
+        val frame = magnifier?.latest ?: return
+        if (now - frame.timestampMillis > LENS_STALE_MS) return
+        lensClip.reset()
+        lensClip.addCircle(c.x, c.y, radius, Path.Direction.CW)
+        lensRect.set(c.x - radius, c.y - radius, c.x + radius, c.y + radius)
+        canvas.withClip(lensClip) { drawBitmap(frame.bitmap, null, lensRect, lensPaint) }
+        val label = "%.1fx".format(zoom)
+        canvas.drawText(label, c.x - labelPaint.measureText(label) / 2, c.y + radius + 30 * dp, labelPaint)
+    }
+
+    /** Thin ring plus four aiming ticks around the hole, and the name outside it. */
+    private fun drawHoleFrame(canvas: Canvas, c: ScreenPoint, radius: Float, color: Int, name: String) {
+        holeRingPaint.color = color
+        holeRingPaint.strokeWidth = 1.5f * dp
+        canvas.drawCircle(c.x, c.y, radius + 2 * dp, holeRingPaint)
+        holeRingPaint.strokeWidth = 2.5f * dp
+        val tickIn = radius + 6 * dp
+        val tickOut = radius + 14 * dp
+        canvas.drawLine(c.x, c.y - tickOut, c.x, c.y - tickIn, holeRingPaint)
+        canvas.drawLine(c.x, c.y + tickIn, c.x, c.y + tickOut, holeRingPaint)
+        canvas.drawLine(c.x - tickOut, c.y, c.x - tickIn, c.y, holeRingPaint)
+        canvas.drawLine(c.x + tickIn, c.y, c.x + tickOut, c.y, holeRingPaint)
+        drawLabel(canvas, c, radius + 8 * dp, name)
     }
 
     private fun drawMarker(canvas: Canvas, sp: ScreenPoint, color: Int, radius: Float, ringGap: Float) {
@@ -317,6 +417,10 @@ class SkyOverlayView @JvmOverloads constructor(
 
     companion object {
         val FOCUS_COLOR = Color.rgb(255, 193, 7)
+        /** Same green as the globe's golden-zone (likely visible) satellites. */
+        val VISIBLE_COLOR = Color.rgb(52, 199, 89)
+        /** Globe: likely visible and inside the camera view (green + yellow). */
+        val VISIBLE_IN_VIEW_COLOR = Color.rgb(255, 149, 0)
 
         /** Colors for locked satellites, chosen to stay distinct from the amber focus color. */
         val LOCK_COLORS = intArrayOf(
@@ -329,8 +433,14 @@ class SkyOverlayView @JvmOverloads constructor(
         )
 
         private const val DOT_RADIUS_DP = 2.5f
+        private const val VISIBLE_DOT_RADIUS_DP = 3.5f
         private const val FOCUS_DOT_RADIUS_DP = 8f
         private const val LOCKED_DOT_RADIUS_DP = 7f
+        private const val HOLE_RADIUS_DP = 26f
+        private const val LENS_RADIUS_DP = 60f
+        /** Hide the lens image if the camera stops delivering crops (e.g. while rebinding). */
+        private const val LENS_STALE_MS = 500L
+        private const val HOLE_OPEN_MS = 250f
         private const val TAP_RADIUS_DP = 36f
         private const val EDGE_INSET_DP = 28f
         private const val GROW_MS = 250f

@@ -36,6 +36,17 @@ function state(o, tSec) {
   return [...rot(px, py), ...rot(vx, vy)];
 }
 
+// Approximate Sun direction (ECEF unit vector): subsolar longitude from UTC time of day,
+// declination from day of year. Good to a few degrees, which is plenty for a preview.
+function sunDirection(ms) {
+  const d = new Date(ms);
+  const hours = d.getUTCHours() + d.getUTCMinutes() / 60;
+  const doy = (ms - Date.UTC(d.getUTCFullYear(), 0, 0)) / 86400000;
+  const lon = (12 - hours) * 15 * Math.PI / 180;
+  const dec = 23.44 * Math.sin(2 * Math.PI * (doy - 81) / 365) * Math.PI / 180;
+  return [Math.cos(dec) * Math.cos(lon), Math.cos(dec) * Math.sin(lon), Math.sin(dec)];
+}
+
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.jpg': 'image/jpeg', '.png': 'image/png' };
 
 createServer(async (req, res) => {
@@ -47,9 +58,10 @@ createServer(async (req, res) => {
   }
   if (url.pathname === '/api/positions') {
     const now = Date.now();
-    const buf = Buffer.alloc(8 + N * 6 * 4);
+    const buf = Buffer.alloc(32 + N * 6 * 4);
     buf.writeDoubleLE(now, 0);
-    orbits.forEach((o, i) => state(o, now / 1000).forEach((x, k) => buf.writeFloatLE(x, 8 + (i * 6 + k) * 4)));
+    sunDirection(now).forEach((x, k) => buf.writeDoubleLE(x, 8 + k * 8));
+    orbits.forEach((o, i) => state(o, now / 1000).forEach((x, k) => buf.writeFloatLE(x, 32 + (i * 6 + k) * 4)));
     res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store' });
     res.end(buf);
     return;

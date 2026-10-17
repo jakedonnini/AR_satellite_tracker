@@ -2,6 +2,8 @@ package com.jakedonnini.sattracker.orbit
 
 import android.util.Log
 import com.jakedonnini.sattracker.geometry.Enu
+import org.hipparchus.geometry.euclidean.threed.Vector3D
+import org.orekit.bodies.CelestialBodyFactory
 import org.orekit.bodies.GeodeticPoint
 import org.orekit.bodies.OneAxisEllipsoid
 import org.orekit.frames.FramesFactory
@@ -22,7 +24,15 @@ data class Observer(val latDeg: Double, val lonDeg: Double, val altMeters: Doubl
  * A satellite's position and velocity in the observer's topocentric frame
  * (East, North, Up; metres and m/s) at the snapshot epoch.
  */
-class SkyObject(val satellite: Satellite, val position: Enu, val velocity: Enu) {
+class SkyObject(
+    val satellite: Satellite,
+    val position: Enu,
+    val velocity: Enu,
+    /** Estimated apparent magnitude for the observer; null when in Earth's shadow. */
+    val magnitude: Double?,
+) {
+    val sunlit: Boolean get() = magnitude != null
+
     /** Linear extrapolation; over a few seconds the error is metres at ~1000 km range. */
     fun positionAfter(seconds: Double) = Enu(
         position.e + velocity.e * seconds,
@@ -31,11 +41,17 @@ class SkyObject(val satellite: Satellite, val position: Enu, val velocity: Enu) 
     )
 }
 
-/** ECEF state of every satellite at [epochMillis]; see [SkyModel.globeSnapshot]. */
-class GlobeSnapshot(val epochMillis: Long, val data: FloatArray)
+/**
+ * ECEF state of every satellite at [epochMillis]; see [SkyModel.globeSnapshot].
+ * [sunDir] is a unit vector toward the Sun in the same Earth-fixed frame.
+ */
+class GlobeSnapshot(val epochMillis: Long, val data: FloatArray, val sunDir: DoubleArray)
 
-/** Every satellite near or above the horizon at [epochMillis]. */
-class SkySnapshot(val epochMillis: Long, val objects: List<SkyObject>)
+/**
+ * Every satellite near or above the horizon at [epochMillis], plus the Sun's elevation at the
+ * observer (for the naked-eye "is the sky dark" test).
+ */
+class SkySnapshot(val epochMillis: Long, val objects: List<SkyObject>, val sunElevationDeg: Double)
 
 /** One point on a satellite's sky track; [epochMillis] is absolute time. */
 data class TrackPoint(val epochMillis: Long, val direction: Enu)
@@ -49,6 +65,7 @@ data class SatelliteDetails(
     val speedKmS: Double,
     /** True while elevation is increasing. */
     val rising: Boolean,
+    val visibility: VisibilityEstimate,
 )
 
 /**
@@ -72,6 +89,10 @@ class SkyModel(
         FramesFactory.getITRF(IERSConventions.IERS_2010, true),
     )
 
+    private val sun = CelestialBodyFactory.getSun()
+    /** 1000-km magnitude per NORAD id, for the brightness estimate (design doc §12.2). */
+    private val m1000 = HashMap<Int, Double>()
+
     private val tracked: List<Pair<Satellite, TLEPropagator>> = satellites.mapIndexedNotNull { i, sat ->
         if (i % 500 == 0) onProgress(i.toFloat() / satellites.size)
         try {
@@ -86,6 +107,14 @@ class SkyModel(
 
     /** Every satellite with a working propagator, in the order [globeSnapshot] reports them. */
     val satellites: List<Satellite> = tracked.map { it.first }
+
+    init {
+        satellites.forEach { m1000[it.noradId] = Visibility.intrinsicMagnitude(it.name, it.noradId) }
+    }
+
+    /** Unit vector toward the Sun in [frame] at [date]. */
+    private fun sunDirection(date: AbsoluteDate, frame: org.orekit.frames.Frame): Vector3D =
+        sun.getPosition(date, frame).normalize()
 
     /**
      * Earth-fixed (ITRF) position and velocity of **every** satellite, for the globe view.
@@ -111,7 +140,8 @@ class SkyModel(
                 // Leave NaN: the globe skips it.
             }
         }
-        return GlobeSnapshot(epochMillis, data)
+        val s = sunDirection(date, earth.bodyFrame)
+        return GlobeSnapshot(epochMillis, data, doubleArrayOf(s.x, s.y, s.z))
     }
 
     /**
@@ -148,24 +178,41 @@ class SkyModel(
         onlyIds: Set<Int>? = null,
     ): SkySnapshot {
         val date = dateOf(epochMillis)
-        val temeToTopo = teme.getTransformTo(topocentric(observer), date)
+        val topo = topocentric(observer)
+        val temeToTopo = teme.getTransformTo(topo, date)
         val minSinEl = kotlin.math.sin(Math.toRadians(minElevationDeg))
         val source = if (onlyIds == null) tracked else tracked.filter { it.first.noradId in onlyIds }
 
+        // Sun and observer in TEME (Earth-centered) for the shadow and phase-angle tests.
+        val sunTeme = sun.getPosition(date, teme)
+        val sunDir = sunTeme.normalize().toArray()
+        val observerTeme = topo.getStaticTransformTo(teme, date).transformPosition(Vector3D.ZERO).scalarMultiply(1e-3).toArray()
+        val sunElevationDeg = Math.toDegrees(topo.getElevation(sunTeme, teme, date))
+
         val objects = source.mapNotNull { (sat, propagator) ->
             try {
+                val pvTeme = propagator.getPVCoordinates(date, teme)
                 // Topocentric axes: X = east, Y = north, Z = zenith.
-                val pv = temeToTopo.transformPVCoordinates(propagator.getPVCoordinates(date, teme))
+                val pv = temeToTopo.transformPVCoordinates(pvTeme)
                 val p = pv.position
                 if (p.z / p.norm < minSinEl) return@mapNotNull null
                 val v = pv.velocity
-                SkyObject(sat, Enu(p.x, p.y, p.z), Enu(v.x, v.y, v.z))
+                val satKm = pvTeme.position.scalarMultiply(1e-3).toArray()
+                val magnitude = if (Visibility.isSunlit(satKm, sunDir)) {
+                    val toObserver = DoubleArray(3) { observerTeme[it] - satKm[it] }
+                    Visibility.apparentMagnitude(
+                        m1000[sat.noradId] ?: 6.0,
+                        p.norm / 1000,
+                        Visibility.phaseAngle(sunDir, toObserver),
+                    )
+                } else null
+                SkyObject(sat, Enu(p.x, p.y, p.z), Enu(v.x, v.y, v.z), magnitude)
             } catch (e: Exception) {
                 // SGP4 throws for decayed / badly stale element sets.
                 null
             }
         }
-        return SkySnapshot(epochMillis, objects)
+        return SkySnapshot(epochMillis, objects, sunElevationDeg)
     }
 
     /** Sky track (unit directions) from [startMillis] to [endMillis] at [stepSeconds]. */
@@ -190,19 +237,32 @@ class SkyModel(
         val date = dateOf(epochMillis)
         val propagator = TLEPropagator.selectExtrapolator(satellite.tle)
         val pvTeme = propagator.getPVCoordinates(date, teme)
-        val pv = teme.getTransformTo(topocentric(observer), date).transformPVCoordinates(pvTeme)
+        val topo = topocentric(observer)
+        val pv = teme.getTransformTo(topo, date).transformPVCoordinates(pvTeme)
         val p = pv.position
         val range = p.norm
         val subPoint = earth.transform(pvTeme.position, teme, date)
         // d(sin el)/dt sign: radial-up component of velocity relative to the line of sight.
         val sinElRate = (pv.velocity.z * range - p.z * (p.dotProduct(pv.velocity) / range)) / (range * range)
+        val elevationDeg = Math.toDegrees(asin(p.z / range))
+
+        val sunTeme = sun.getPosition(date, teme)
+        val visibility = Visibility.estimate(
+            m1000 = m1000[satellite.noradId] ?: Visibility.intrinsicMagnitude(satellite.name, satellite.noradId),
+            satPos = pvTeme.position.scalarMultiply(1e-3).toArray(),
+            observerPos = topo.getStaticTransformTo(teme, date).transformPosition(Vector3D.ZERO).scalarMultiply(1e-3).toArray(),
+            sunDir = sunTeme.normalize().toArray(),
+            elevationDeg = elevationDeg,
+            observerSunElevationDeg = Math.toDegrees(topo.getElevation(sunTeme, teme, date)),
+        )
         return SatelliteDetails(
             azimuthDeg = (Math.toDegrees(atan2(p.x, p.y)) + 360.0) % 360.0,
-            elevationDeg = Math.toDegrees(asin(p.z / range)),
+            elevationDeg = elevationDeg,
             rangeKm = range / 1000,
             altitudeKm = subPoint.altitude / 1000,
             speedKmS = pvTeme.velocity.norm / 1000,
             rising = sinElRate > 0,
+            visibility = visibility,
         )
     }
 

@@ -21,16 +21,18 @@ The app now launches into a live camera preview with a debug HUD that shows ever
 
 | Area | Status | Measured on device |
 |---|---|---|
-| Satellite catalog | ✅ | CelesTrak `active` group as OMM/JSON → Room cache. **16,747** downloaded in about 15 s, of which **15,937** are LEO. 761 were above the horizon at test time. |
-| Orbit propagation | ✅ | OMM → Orekit `TLE` (field-wise constructor, so 6-digit IDs work) → SGP4 → az/el/range. Unit-tested against Orekit's own `TopocentricFrame`. |
-| GPS | ✅ | Fused location provider. First fix came from cache in under 1 s and refined to ±7 m. Permission flow fixed. |
-| Pointing | ✅ (needs outdoor validation) | Gyro-driven `GAME_ROTATION_VECTOR` with its heading pinned to the compass by a slow filter, plus WMM declination (§6.2). At rest indoors, jitter dropped from spikes of 0.42° (and 1.4° pops) in raw mode to **≤ 0.05°**, with elevation steady to ±0.01°. Azimuth still glides about ±0.5° over 30 s as the indoor magnetic field wanders. The sensor's own heading-uncertainty estimate indoors was ±30°, so outdoor validation is still needed. |
-| Camera | ✅ | CameraX preview. FOV read from Camera2 characteristics: 71.4° × 56.9°, f = 6.81 mm. |
-| AR overlay | ✅ | Dots for about 780 satellites above the horizon, a horizon line and compass points, a center reticle. Positions are extrapolated with velocity every display frame. |
-| Focus + info | ✅ | The reticle picks the closest satellite within 3° (kept until 5°, with a 1° switch margin). Its dot grows and gets a name label. The info card shows altitude, range, speed, rising/setting and az/el. Checked on device: Starlink at 484 km, 7.63 km/s. |
-| Orbit path | ✅ | The focused satellite's track from −5 to +15 min at 15 s steps: past dashed, future solid with one-minute ticks, clipped at the horizon. |
-| Lock + track | ✅ | Tapping a marker (36 dp hit radius) locks it; tapping again releases it. Each locked satellite gets one of 6 colors that stay distinct from the amber focus color, and keeps its dot, label and orbit path in that color while you pan around. Off-screen or behind-camera locks show a colored edge arrow pointing the way to turn (dimmed with "below horizon" once it sets). A translucent "Clear selection (N)" button appears while anything is locked. The info card shows the focused satellite, or else the most recently locked one. Confirmed on device by locking two satellites and panning away. |
-| Globe screen | ✅ | Opens on a globe.gl Earth with every LEO satellite, the user's marker, the live camera-view pyramid with in-view satellites highlighted, and locked satellites with labels and one-period orbit paths. A weighted loading bar becomes the **📷 AR camera** toggle, which sits bottom-center on both screens (🌐 Globe in AR), and Back also returns to the globe. Top-right holds the screen's action (⌖ Center on me / ✕ Clear). A rippling wall of light (standing on the ground circle of a 40° cone from Earth's center through the user) marks how far out LEO satellites can be seen, there are three satellite tiers (dim / above horizon / in camera view), and the camera pyramid fades out along its length. Checked in a desktop browser with synthetic orbits (`tools/globe/dev-server.mjs`): 60 fps with 16k points, no console errors, Earth texture aligned (marker at the right place). On the Pixel 6 Pro: confirmed working by the user, no JS errors or WebGL warnings, and a full Earth-fixed pass over 15,942 satellites takes about 0.5–0.8 s every 5 s. |
+| Satellite catalog | Done | CelesTrak `active` group as OMM/JSON → Room cache. **16,747** downloaded in about 15 s, of which **15,937** are LEO. 761 were above the horizon at test time. |
+| Orbit propagation | Done | OMM → Orekit `TLE` (field-wise constructor, so 6-digit IDs work) → SGP4 → az/el/range. Unit-tested against Orekit's own `TopocentricFrame`. |
+| GPS | Done | Fused location provider. First fix came from cache in under 1 s and refined to ±7 m. Permission flow fixed. |
+| Pointing | Done (needs outdoor validation) | Gyro-driven `GAME_ROTATION_VECTOR` with its heading pinned to the compass by a slow filter, plus WMM declination (§6.2). At rest indoors, jitter dropped from spikes of 0.42° (and 1.4° pops) in raw mode to **≤ 0.05°**, with elevation steady to ±0.01°. Azimuth still glides about ±0.5° over 30 s as the indoor magnetic field wanders. The sensor's own heading-uncertainty estimate indoors was ±30°, so outdoor validation is still needed. |
+| Camera | Done | CameraX preview. FOV read from Camera2 characteristics: 71.4° × 56.9°, f = 6.81 mm. |
+| AR overlay | Done | Dots for about 780 satellites above the horizon, a horizon line and compass points, a center reticle. Positions are extrapolated with velocity every display frame. |
+| Focus + info | Done | The reticle picks the closest satellite within 3° (kept until 5°, with a 1° switch margin). Its dot grows and gets a name label. The info card shows altitude, range, speed, rising/setting and az/el. Checked on device: Starlink at 484 km, 7.63 km/s. |
+| Orbit path | Done | The focused satellite's track from −5 to +15 min at 15 s steps: past dashed, future solid with one-minute ticks, clipped at the horizon. |
+| Lock + track | Done | Tapping a marker (36 dp hit radius) locks it; tapping again releases it. Each locked satellite gets one of 6 colors that stay distinct from the amber focus color, and keeps its dot, label and orbit path in that color while you pan around. Off-screen or behind-camera locks show a colored edge arrow pointing the way to turn (dimmed with "below horizon" once it sets). A translucent "Clear selection (N)" button appears while anything is locked. The info card shows the focused satellite, or else the most recently locked one. Confirmed on device by locking two satellites and panning away. |
+| Globe screen | Done | Opens on a globe.gl Earth with every LEO satellite, the user's marker, the live camera-view pyramid with in-view satellites highlighted, and locked satellites with labels and one-period orbit paths. A weighted loading bar becomes the **AR camera** toggle, which sits bottom-center on both screens (Globe in AR), and Back also returns to the globe. Top-right holds the screen's action (Center on me / Clear). A rippling wall of light (standing on the ground circle of a 40° cone from Earth's center through the user) marks how far out LEO satellites can be seen, there are three satellite tiers (dim / above horizon / in camera view), and the camera pyramid fades out along its length. Checked in a desktop browser with synthetic orbits (`tools/globe/dev-server.mjs`): 60 fps with 16k points, no console errors, Earth texture aligned (marker at the right place). On the Pixel 6 Pro: confirmed working by the user, no JS errors or WebGL warnings, and a full Earth-fixed pass over 15,942 satellites takes about 0.5–0.8 s every 5 s. |
+| Naked-eye visibility | Built, awaiting field test | Sun from Orekit (DE-440), checked against the June 2026 solstice declination. Each satellite gets a cylindrical-shadow test and a magnitude estimate. AR: green dots for satellites passing all four §12 criteria, plus a visibility line on the info card and the Sun's elevation and sky state in the HUD. Globe: day/night texture blend by the real Sun and a faint green twilight wash. Golden-zone satellites (sunlit over ground past civil twilight) are green, or orange when also in the camera view, with a legend top-left. Next: compare against Heavens-Above on a clear evening. |
+| Lock-on hole + Analyze + zoom | Hole confirmed on device; zoom lens awaiting device test | A locked satellite in the reticle gets a clear window onto the camera feed, with a 1–8× zoom lens fed by a full-resolution camera stream. **Analyze** shows a Wikipedia photo and intro, CelesTrak SATCAT facts and live tracker data (§13). Parsing is unit-tested against saved real responses. |
 
 **Sky pass cost (Pixel 6 Pro):** a full SGP4 pass over 16k satellites takes about 1.0–1.8 s. It now runs every 20 s with a −10° mask to find candidates (about 1,600). The 2 s pass propagates only those candidates, in about 100 ms.
 
@@ -40,14 +42,14 @@ The app now launches into a live camera preview with a debug HUD that shows ever
 
 | Area | Status | Notes |
 |---|---|---|
-| Location (GPS) | ⚠️ Partly works | Fused location updates every 2 s. **Bug:** there's no `onRequestPermissionsResult`, so on first launch updates never start after the user grants permission. They start only on the next launch. |
-| Satellite data | ⚠️ Partly works | Fetches **Starlink only** from CelesTrak on every launch. **There is no database.** TLEs are held in memory only, with no cache, no offline mode and no refresh. |
-| Orekit / propagation | ✅ Works | Orekit 13 is initialized from bundled `orekit-data` (37 MB, copied to internal storage on first run). SGP4 gives TEME position, which is converted to a topocentric elevation. Satellites with elevation > 10° are logged. |
-| Visibility filter | ❌ Wrong result | The filter runs **before the first GPS fix arrives**, so the observer is at lat 0, lon 0, alt 0 (off the coast of Africa). It also runs only once, at startup. |
-| Orientation | ⚠️ Raw data only | This is **accelerometer + magnetometer** (`getRotationMatrix` / `getOrientation`), **not the gyro**. Azimuth, pitch and roll are logged and never used. There's no gyro fusion, so it will be jittery. It reports **magnetic** north with no declination correction, and the angles describe the screen plane, not the camera's look direction. |
-| "Which satellite am I looking at" | ❌ Not started | |
-| Camera / AR overlay | ❌ Not started | `ARSceneView` (SceneView 2.3 / ARCore) is in the layout, but nothing is ever placed in the scene. The app never requests camera permission itself. |
-| UI | ❌ Not started | The Compose theme files are template leftovers and unused. The Activity uses XML + AppCompat. |
+| Location (GPS) | Partly works | Fused location updates every 2 s. **Bug:** there's no `onRequestPermissionsResult`, so on first launch updates never start after the user grants permission. They start only on the next launch. |
+| Satellite data | Partly works | Fetches **Starlink only** from CelesTrak on every launch. **There is no database.** TLEs are held in memory only, with no cache, no offline mode and no refresh. |
+| Orekit / propagation | Works | Orekit 13 is initialized from bundled `orekit-data` (37 MB, copied to internal storage on first run). SGP4 gives TEME position, which is converted to a topocentric elevation. Satellites with elevation > 10° are logged. |
+| Visibility filter | Wrong result | The filter runs **before the first GPS fix arrives**, so the observer is at lat 0, lon 0, alt 0 (off the coast of Africa). It also runs only once, at startup. |
+| Orientation | Raw data only | This is **accelerometer + magnetometer** (`getRotationMatrix` / `getOrientation`), **not the gyro**. Azimuth, pitch and roll are logged and never used. There's no gyro fusion, so it will be jittery. It reports **magnetic** north with no declination correction, and the angles describe the screen plane, not the camera's look direction. |
+| "Which satellite am I looking at" | Not started | |
+| Camera / AR overlay | Not started | `ARSceneView` (SceneView 2.3 / ARCore) is in the layout, but nothing is ever placed in the scene. The app never requests camera permission itself. |
+| UI | Not started | The Compose theme files are template leftovers and unused. The Activity uses XML + AppCompat. |
 
 **Previously a crash, now fixed by the restructure:** on first launch, the permission dialog triggered `onPause` → `removeLocationUpdates(locationCallback)` while `lateinit locationCallback` was still uninitialized.
 
@@ -80,7 +82,7 @@ Decided 2026-10-15. ARCore and SceneView have been removed, and the camera now r
 | | **A. Sensor AR (recommended)** | **B. ARCore / SceneView (current deps)** |
 |---|---|---|
 | How | CameraX preview, plus the `TYPE_ROTATION_VECTOR` sensor (gyro + accel + mag fused by the OS), plus our own projection math, drawn by a custom `View` on a `Canvas` | ARCore session for camera and tracking, with satellites placed as 3D nodes |
-| Sky at night | ✅ Unaffected | ❌ ARCore's visual tracking needs texture. A dark or featureless sky loses tracking. |
+| Sky at night | Unaffected | Fails: ARCore's visual tracking needs texture. A dark or featureless sky loses tracking. |
 | North reference | Compass + declination (we have to handle it either way) | ARCore's yaw is arbitrary, so it **still** needs the compass to align to north. Geospatial API heading needs street-level imagery, not sky. |
 | Depth | Not needed (satellites are effectively at infinity, so this is pure rotation) | Gives 6-DoF, which we don't need |
 | Device support | Any phone with a camera and gyro | ARCore-certified devices only (the manifest currently has `camera.ar required=true`) |
@@ -163,7 +165,7 @@ A satellite is actually visible when it is **sunlit** (not in Earth's shadow, ch
 
 | Source | Access | Fit for this app |
 |---|---|---|
-| **CelesTrak GP** ✅ chosen | Free, no account, HTTPS | The same 18 SDS elements as Space-Track, re-served with grouping. Updated about every 2 h. OMM in JSON/CSV/XML. |
+| **CelesTrak GP** (chosen) | Free, no account, HTTPS | The same 18 SDS elements as Space-Track, re-served with grouping. Updated about every 2 h. OMM in JSON/CSV/XML. |
 | Space-Track.org | Free account; ≤ 30 req/min, 300/h | Authoritative source, but its terms forbid embedding or sharing credentials, so it would need our own backend. Keep as a fallback if CelesTrak goes away. |
 | N2YO API | API key; computes positions server-side | Wrong model: we need elements to propagate locally at frame rate, not per-request positions. |
 | SatNOGS DB | Free | Good for radio-transmitter metadata later. Not a primary element source. |
@@ -231,17 +233,17 @@ The active LEO catalog is about 16k objects (mostly Starlink), and running SGP4 
 5. **When loading finishes:**
    - **Every satellite appears.** That's the whole LEO catalog (about 16k), not just the ones in view, drawn in three tiers: dim (not visible from the user), cyan (above the user's horizon), yellow (inside the camera's view).
    - **Locked satellites** (from the AR screen) show in their lock color, larger, with a name label and their orbit path.
-   - **The loading bar becomes the "📷 AR camera" toggle**, and **"⌖ Center on me"** appears in the top right.
+   - **The loading bar becomes the "AR camera" toggle**, and **"Center on me"** appears in the top right.
 6. **Shared layout, no overlaps.** Both screens use the same scheme:
-   - **Top row:** an info panel on the left takes the remaining width (the satellite count on the globe, the debug HUD in AR), and the screen's action is on the right ("⌖ Center on me" / "✕ Clear (N)").
-   - **Bottom stack:** details or loading, then the **screen toggle**, in the same spot, size and style on both screens ("📷 AR camera" / "🌐 Globe").
+   - **Top row:** an info panel on the left takes the remaining width (the satellite count on the globe, the debug HUD in AR), and the screen's action is on the right ("Center on me" / "Clear (N)").
+   - **Bottom stack:** details or loading, then the **screen toggle**, in the same spot, size and style on both screens ("AR camera" / "Globe").
    - Locks are shared both ways because both screens read the same `SkyViewModel`.
 
 ### 11.2 Rendering: globe.gl in a WebView
 
 | Option | Verdict |
 |---|---|
-| **globe.gl + three.js in a WebView** ✅ | Open source (MIT). Gives orbit/zoom controls, a textured Earth, atmosphere glow, and path/label layers out of the box, and its own examples include a real-time satellite tracker. We bundle it offline, so it needs no network at runtime. |
+| **globe.gl + three.js in a WebView** (chosen) | Open source (MIT). Gives orbit/zoom controls, a textured Earth, atmosphere glow, and path/label layers out of the box, and its own examples include a real-time satellite tracker. We bundle it offline, so it needs no network at runtime. |
 | SceneView / Filament | Native and fast, but has no globe primitives. Drawing 16k points needs a custom compiled material, and labels and paths would be hand-built. |
 | Raw OpenGL ES | The most control, but every feature (camera controls, atmosphere, labels) would be written from scratch. |
 
@@ -272,7 +274,7 @@ locked satellites         ──(on lock / every 60 s)───────▶  
 | Building propagators | 30% | Satellites processed / total |
 | First globe positions | 10% | Completion of the first full ECEF pass |
 
-`SkyViewModel.loading: StateFlow<LoadingState(stage, fraction, done)>` drives a native `ProgressBar` and label. When `done`, they're replaced by the **📷 AR camera** toggle, and **⌖ Center on me** appears top-right.
+`SkyViewModel.loading: StateFlow<LoadingState(stage, fraction, done)>` drives a native `ProgressBar` and label. When `done`, they're replaced by the **AR camera** toggle, and **Center on me** appears top-right.
 
 ### 11.5 Navigation and lifecycle
 
@@ -289,17 +291,153 @@ locked satellites         ──(on lock / every 60 s)───────▶  
 - Tapping satellites on the globe to lock them. The bridge could support it later; for now, locking happens on the AR screen.
 - MEO/GEO objects. The catalog is still filtered to LEO (§3).
 
-## 12. Milestones
+## 12. Naked-eye visibility
 
-0. ✅ **Fix the foundations.** Permission flow, wait for a GPS fix before filtering, periodic recompute.
-1. 🟡 **Pointing.** `AttitudeTracker` with rotation vector + declination, plus a debug HUD showing boresight az/el. *Done; still to do: a night-sky check against Polaris and the Moon.*
-2. ✅ **Catalog.** Room cache, LEO filter, refresh policy. *(Group tagging is deferred to the filters work.)*
-3. ✅ **Overlay.** CameraX preview, FOV, ARCore/SceneView dropped, projected markers, horizon.
-4. ✅ **Interaction.** Reticle focus, info card, orbit track, tap to lock multiple satellites with per-satellite colors, edge arrows, clear button.
-5. **Polish.** Sunlit/visible classification, filters, calibration UX, trimmed Orekit data.
-6. ✅ **Globe screen.** Loading progress, 3D Earth with all LEO satellites, camera-view pyramid and locked satellites (§11).
+*Proposed and implemented 2026-10-16 on the `satellite-visibility` branch.*
 
-## 13. Open questions for review
+### 12.1 Criteria
+
+A satellite can be seen with the naked eye when **all** of these hold:
+
+| # | Condition | Why | Threshold used |
+|---|---|---|---|
+| 1 | **The satellite is sunlit** | It only shines by reflected sunlight. In the middle of the night most LEO satellites are in Earth's shadow. | Outside Earth's shadow (cylindrical model, R = 6,371 km) |
+| 2 | **The observer's sky is dark** | The sky must be dark enough to see a faint moving point. | Sun at least **6° below** the observer's horizon (end of civil twilight). Visibility gets better through nautical (−12°) and astronomical (−18°) twilight. |
+| 3 | **The satellite is high enough** | Near the horizon there's too much extinction, haze and obstruction. | Elevation **≥ 10°** |
+| 4 | **It is bright enough** | The naked-eye limit for a moving point is about magnitude 4–5 in suburbs and about 6 under dark skies. | Estimated magnitude **≤ 5.0** counts as "likely visible" |
+
+Conditions 1 and 2 together are why satellites are seen in the **hours after sunset and before sunrise**. The ground is dark, but a satellite a few hundred kilometres up is still in sunlight. Later in the night the satellites enter Earth's shadow too.
+
+### 12.2 Brightness estimate
+
+`m = M₁₀₀₀ + 5·log₁₀(range / 1000 km) − 2.5·log₁₀(sin φ + (π − φ)·cos φ)`
+
+- **M₁₀₀₀** is the satellite's "1000-km magnitude": its brightness at 1,000 km range and a 90° phase angle.
+- **φ** is the phase angle (Sun–satellite–observer). The last term is the diffuse-sphere phase law, normalised to zero at 90°. A satellite with the Sun behind the observer (φ → 0) is up to 1.2 magnitudes brighter.
+- **The catalog has no per-satellite brightness**, so M₁₀₀₀ is a heuristic by name (published averages where they exist). These are rough estimates; real satellites flare and vary with attitude.
+
+| Object | M₁₀₀₀ |
+|---|---|
+| ISS (ZARYA) | −1.3 |
+| CSS (TIANHE) | 0.0 |
+| HST | 2.2 |
+| Rocket bodies (`R/B`) | 4.0 |
+| STARLINK | 5.5 (Mallama et al.: about 5.5 for post-VisorSat / Mini at 1000 km) |
+| ONEWEB | 7.5 |
+| Debris (`DEB`) | 8.0 |
+| Everything else | 6.0 |
+
+### 12.3 The golden zone (globe)
+
+On the globe, a satellite is in the **golden zone** when it is sunlit **and** the ground directly beneath it is past civil twilight (the Sun is more than 6° below the horizon there). Anyone under it, given a clear sky, has it in their good-viewing window.
+
+The golden zone always hugs the night side of the **terminator** (the sunset/sunrise line). It's bounded on one side by the darkening sky and on the other by Earth's shadow reaching the satellite's altitude, about 20–30° past the terminator for LEO. These satellites are drawn **green wherever they are on the globe**, overriding the other tiers, or **orange** (green + yellow) when they're also inside the user's camera view. A legend in the globe's top-left panel explains both colours.
+
+### 12.4 Day / night globe
+
+- The globe shader blends the **Blue Marble day texture** and the **Earth-at-night city-lights texture** by the Sun direction, with a soft transition. There's no terminator glow; it made the day side too busy.
+- The twilight band (Sun 6–18° below the horizon) gets a faint green wash, so the ground zone under the green satellites is visible.
+- The Sun position comes from Orekit (`CelestialBodyFactory.getSun()`, using the bundled DE-440 ephemeris). It's computed once per globe pass and sent in the `/api/positions` header, now `Float64 epoch, Float64 sunX/Y/Z (unit, ECEF)`, then the per-satellite Float32 state.
+
+### 12.5 AR screen
+
+- **Dots:** satellites that pass all four criteria for **you** are drawn **green** (the same green as the globe). The rest stay white.
+- **Info card:** a visibility line, e.g. `Likely visible · mag 3.8`, or the reason it isn't (`In Earth's shadow`, `Sky too bright (Sun −2°)`, `Too low`, `Too faint · mag 6.4`).
+- **HUD:** shows the Sun's elevation at the user and the sky state (day / civil / nautical / astronomical twilight / night).
+
+### 12.6 Testing
+- **Unit tests:** shadow test geometry, phase angle, the magnitude formula (equal to M₁₀₀₀ at 1,000 km and 90°), the twilight classification, and the Sun direction vs. a known solstice/equinox declination.
+- **Field test:** compare predicted ISS and Starlink visibility against Heavens-Above for the same evening.
+
+## 13. Lock-on view and Analyze
+
+*Implemented 2026-10-16 on the `satellite-analysis` branch.*
+
+### 13.1 Camera hole
+When a **locked** satellite is in the reticle, the overlay opens a clear window at its position (26 dp radius, animated open over 250 ms) so the real satellite can be seen in the camera feed. Markers, the orbit line, dots and labels are all cleared inside it.
+
+- **How:** while anything is locked, the overlay draws into an offscreen layer (`saveLayer`). It then clears a circle with `PorterDuff.Mode.CLEAR`, restores the layer, and draws a thin ring with four aiming ticks and the name in the lock colour *outside* the hole.
+
+### 13.2 Analyze
+With a locked satellite in the reticle, an **Analyze <name>** button appears above the info card. It opens a full-screen panel with:
+
+- **Photo:** the satellite's Wikipedia thumbnail (about 330 px). Satellites without their own article (e.g. individual Starlinks) get a *representative* image of their constellation or object class, labelled as such.
+- **Right now:** altitude, range, speed, rising/setting, az/el and the naked-eye estimate (§12), live from the tracker.
+- **Catalog:** type, status, owner, launch date and site, period, inclination, perigee × apogee, and a size class from radar cross-section.
+- **About:** the Wikipedia intro text and a "Read more on Wikipedia" link.
+
+**Data sources.** Everything is online, fetched only when Analyze is tapped, and nothing is stored on the device:
+
+| Request | Purpose | Typical size |
+|---|---|---|
+| `celestrak.org/satcat/records.php?CATNR=<id>&FORMAT=JSON` | Catalog facts | under 1 KB |
+| `db.satnogs.org/api/satellites/?norad_cat_id=<id>` | Aliases, operator, countries, website, photo | about 1 KB (+ photo about 45 KB) |
+| Wikipedia `list=search` on the satellite's names | Article when Wikidata has none | about 1 KB each, at most 3 |
+| Wikidata search `haswbstatement:P377=<id>` (P377 = satellite catalog number) | Find the satellite's Wikidata item | under 1 KB |
+| Wikidata `wbgetentities&props=sitelinks&sitefilter=enwiki` | Its English Wikipedia title | under 1 KB |
+| Wikipedia REST `page/summary/<title>` | Description, intro, thumbnail URL | about 3 KB |
+| Thumbnail | Photo | about 20–60 KB |
+
+- **Speed and fallbacks:** the SATCAT and Wikidata/Wikipedia chains run in parallel. When Wikidata has no item for the NORAD id, the article comes from a constellation table (Starlink, OneWeb, Iridium, Globalstar, Planet "Flock", Spire "Lemur", Kuiper, …) or the object class ("Multistage rocket" for R/B, "Space debris" for DEB).
+- **Caching:** results are kept in an in-memory LRU (32 satellites) for the session. A total failure (e.g. offline) isn't cached, so retrying works.
+- **Etiquette:** requests carry a descriptive User-Agent with a contact URL, as Wikimedia asks. The SATCAT lookups are single, user-triggered requests, well inside CelesTrak's usage policy.
+- **No new libraries:** it reuses OkHttp, kotlinx.serialization and `BitmapFactory`.
+
+### 13.3 Zoom lens
+With a locked satellite centered, a **vertical slider** appears on the right edge (1× at the bottom, 8× at the top, exponential so each step feels the same). Only the hole is magnified; everything outside stays at 1×.
+
+- **Where the detail comes from:** CameraX binds a second use case beside the preview, a **full-resolution 4:3 `ImageAnalysis` stream** (target 4032 × 3024) with the same field of view. The preview stream is only about 1080p and is already upscaled about 2.2× to fill the screen, so the lens samples the high-res stream for real extra detail. On a Pixel 6 Pro that's roughly 3× more than the preview before it becomes plain enlargement.
+- **Cost:** each frame, the analyzer converts **only the crop under the hole** (at most 320 × 320 px) from YUV to an upright ARGB bitmap. When no zoom is requested it closes frames immediately.
+- **Mapping:** `ZoomCrop` maps the screen point to sensor pixels through PreviewView's FILL_CENTER scaling and the sensor rotation (unit-tested for 0/90/180/270°).
+- **Lens size:** the hole widens from 26 dp to 60 dp radius as you zoom in to 2×, so the lens is big enough to be useful. It resets to 1× whenever the hole closes.
+- **Caveat:** the lens is centered on the *predicted* position. If the pointing error is larger than the lens' field of view at high zoom, the real satellite can sit outside it. Zoom out a little to find it.
+- **Fallback:** devices that can't stream preview + full-res analysis together fall back to preview only, with the zoom disabled.
+
+### 13.4 Better satellite info: options
+
+Current coverage is limited because Wikidata only tags well-known satellites with a NORAD number (P377), and about 60% of the catalog is Starlink, which only matches the constellation article.
+
+| Source | Gives | Coverage (checked 2026-10-17) | Cost / constraints |
+|---|---|---|---|
+| **SatNOGS DB API** (`db.satnogs.org/api/satellites/?norad_cat_id=`) | Name aliases, **photo**, operator, countries, status, website, radio transmitters | ISS and amateur / small satellites (e.g. FOX-1B had a photo); **no Starlink** | Free, open (CC BY-SA), no key, about 1 KB |
+| **Wikipedia full-text search** on the cleaned name or program (e.g. "Sentinel-2A", "NOAA 19", "Cosmos 2558") | Article + image when Wikidata has no NORAD link | Most named science / weather / navigation satellites | Free; needs a relevance check to avoid wrong articles |
+| **Wikimedia Commons search** | Photos / renderings by program name | Good for major programs | Free; images vary in relevance |
+| **GCAT** (Jonathan McDowell, planet4589.org) | Mass, dimensions, shape, program, category, manufacturer, comment, for **every** object incl. debris | Complete; updated daily | CC BY; but 5–19 MB TSVs, so it needs a tiny server-side index (e.g. a static per-NORAD JSON on GitHub Pages) |
+| **ESA DISCOS** | Mass, shape, dimensions, cross-sections | Complete | Free account + personal token; not suited to embedding in an app |
+| **LLM + web search** behind a small serverless proxy | A written summary with sources for *anything* | Best | Costs per lookup, needs a backend to hold the API key |
+| Gunter's Space Page / N2YO / Heavens-Above | Rich pages and photos | Very good | No API; scraping copyrighted pages, so not recommended |
+
+**Implemented (2026-10-17): SatNOGS + Wikipedia search.** The lookup chain is now:
+
+1. **In parallel:** CelesTrak SATCAT, SatNOGS DB (capped at 4 s, because the volunteer-run server is sometimes unreachable) and Wikidata by NORAD number.
+2. **Article:**
+   - The Wikidata-linked article.
+   - Otherwise, for anything that isn't a mega-constellation member (Starlink, OneWeb, Kuiper, Qianfan, Flock, Lemur, Iridium, Globalstar, Orbcomm), a **Wikipedia full-text search** on the CelesTrak name, the SatNOGS name and the aliases (at most 3 searches and 3 summary fetches). **Correct data beats any data**, so a hit has to pass all of these checks:
+     - **Title:** matches once punctuation and case are dropped (*exact*), or is the program name plus a unit suffix of at most 2 characters (*program*, "SENTINEL-2A" ~ "Sentinel-2"). A parenthesised disambiguator is allowed only if it's space-related ("Aqua (satellite)"), never e.g. "Checkmate (comics)".
+     - **Content:** the short description and intro must use spacecraft vocabulary, and are rejected outright if the description or first sentence marks fiction, media, people, etc. (whole-word, so "broadband" and "contractor" are fine).
+     - **Catalog cross-check:** an exact article must mention the satellite's **SATCAT launch year**. That separates same-named spacecraft; a LEO "JUNO" would not get NASA's 2011 Jupiter probe. A program article must mention that year or no years at all, and is shown as general info ("About: MetOp"). If there's no SATCAT record to verify against, search results aren't used.
+   - If nothing qualifies, the panel shows only the verified catalog and SatNOGS facts. *Bug fixed 2026-10-17: CHECKMATE 8 used to resolve to the DC Comics article.*
+   - Otherwise, the constellation / object-class article.
+3. **Photo:** the satellite's own article thumbnail, else the **SatNOGS photo**, else the general article's thumbnail. The panel captions SatNOGS and representative images.
+4. **Mission section** from SatNOGS: aliases, operator, countries, status and a mission-website link.
+
+Checked live: Sentinel-2A, NOAA-19, Landsat 9, Aqua and Terra get their own articles, and MetOp-B / Swarm A get their program articles. CHECKMATE 8, GENESIS, ATLAS and HAWK-1, whose names collide with comics, cars, anime, moons and aircraft, correctly get none. The NOAA blanket fallback was removed, because NOAA-20/21 are JPSS, not POES.
+
+SatNOGS transmitter (radio frequency) data was left out: that endpoint was timing out when checked.
+
+**Next step, if wanted:** a static **GCAT index** for physical specs (mass, dimensions, manufacturer) on every object, if a tiny hosted file is acceptable.
+
+## 14. Milestones
+
+0. **Fix the foundations.** (done) Permission flow, wait for a GPS fix before filtering, periodic recompute.
+1. **Pointing.** (in progress) `AttitudeTracker` with rotation vector + declination, plus a debug HUD showing boresight az/el. *Done; still to do: a night-sky check against Polaris and the Moon.*
+2. **Catalog.** (done) Room cache, LEO filter, refresh policy. *(Group tagging is deferred to the filters work.)*
+3. **Overlay.** (done) CameraX preview, FOV, ARCore/SceneView dropped, projected markers, horizon.
+4. **Interaction.** (done) Reticle focus, info card, orbit track, tap to lock multiple satellites with per-satellite colors, edge arrows, clear button.
+5. **Polish.** (in progress) Sunlit/visible classification is done (§12); still to do: filters, calibration UX, trimmed Orekit data.
+6. **Globe screen.** (done) Loading progress, 3D Earth with all LEO satellites, camera-view pyramid and locked satellites (§11).
+
+## 15. Open questions for review
 
 1. ~~**AR approach**~~ — decided: sensor AR with CameraX.
 2. **Satellite set:** we now cache all active LEO (about 16k). Should the default *view* be filtered to curated groups (stations, visual, Starlink)?
