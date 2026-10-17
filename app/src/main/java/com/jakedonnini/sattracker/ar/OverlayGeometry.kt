@@ -4,20 +4,21 @@ import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.min
 
-/** A tappable satellite marker from the last drawn frame. */
-data class HitTarget(val id: Int, val x: Float, val y: Float)
-
 /** Small pure helpers for overlay interaction, kept here so they can be unit-tested. */
 object OverlayGeometry {
 
-    /** The target nearest to (x, y) within [radius] pixels, or null. */
-    fun nearest(targets: List<HitTarget>, x: Float, y: Float, radius: Float): HitTarget? {
-        var best: HitTarget? = null
+    /**
+     * The tappable marker nearest to (x, y) within [radius] pixels. Markers are kept in parallel
+     * arrays (marker i at ([xs][i], [ys][i]), i < [count]) so the overlay can rebuild them every
+     * frame without allocating. Returns the marker's index, or -1.
+     */
+    fun nearestIndex(xs: FloatArray, ys: FloatArray, count: Int, x: Float, y: Float, radius: Float): Int {
+        var best = -1
         var bestDist = radius
-        for (t in targets) {
-            val d = hypot(t.x - x, t.y - y)
+        for (i in 0 until count) {
+            val d = hypot(xs[i] - x, ys[i] - y)
             if (d <= bestDist) {
-                best = t
+                best = i
                 bestDist = d
             }
         }

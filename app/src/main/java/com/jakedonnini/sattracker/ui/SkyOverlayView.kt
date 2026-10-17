@@ -17,10 +17,8 @@ import android.view.MotionEvent
 import android.view.View
 import androidx.core.graphics.withClip
 import com.jakedonnini.sattracker.ar.FocusSelector
-import com.jakedonnini.sattracker.ar.HitTarget
 import com.jakedonnini.sattracker.ar.OverlayGeometry
 import com.jakedonnini.sattracker.ar.Projector
-import com.jakedonnini.sattracker.ar.ScreenPoint
 import com.jakedonnini.sattracker.camera.CameraFov
 import com.jakedonnini.sattracker.camera.MagnifyRequest
 import com.jakedonnini.sattracker.camera.Magnifier
@@ -37,6 +35,7 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.min
+import kotlin.math.sqrt
 
 /**
  * Draws the AR layer over the camera preview: horizon and compass points, a dot for every
@@ -87,15 +86,34 @@ class SkyOverlayView @JvmOverloads constructor(
     private val lensRect = RectF()
     private val dp = resources.displayMetrics.density
 
-    /** Markers drawn in the last frame, for hit-testing taps. */
-    private var hitTargets: List<HitTarget> = emptyList()
-    private var hitSatellites: Map<Int, Satellite> = emptyMap()
+    // drawFrame runs every display frame (up to 120 Hz) over hundreds of satellites, so it works
+    // in these buffers, reused across frames, instead of allocating per satellite or per point.
+
+    /** Markers drawn in the last frame, for hit-testing taps: marker i is at (hitXs[i], hitYs[i]). */
+    private var hitXs = FloatArray(INITIAL_HIT_CAPACITY)
+    private var hitYs = FloatArray(INITIAL_HIT_CAPACITY)
+    private var hitSatellites = arrayOfNulls<Satellite>(INITIAL_HIT_CAPACITY)
+    private var hitCount = 0
+
+    /** Focus candidates near the boresight (id -> unit direction) and their sky objects. */
+    private val candidates = HashMap<Int, Enu>()
+    private val candidateObjects = HashMap<Int, SkyObject>()
+    /** Current positions of locked satellites that are above the horizon. */
+    private val lockedPositions = HashMap<Int, Enu>()
+    /** One projected point (x, y). */
+    private val pt = FloatArray(2)
+    /** Projected track points (x, y pairs) and whether each one projected. */
+    private var trackXy = FloatArray(0)
+    private var trackOk = BooleanArray(0)
+    private var lensLabel = ""
+    private var lensLabelZoom = Float.NaN
 
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent) = true
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            val hit = OverlayGeometry.nearest(hitTargets, e.x, e.y, TAP_RADIUS_DP * dp) ?: return false
-            hitSatellites[hit.id]?.let { onSatelliteTapped?.invoke(it) }
+            val hit = OverlayGeometry.nearestIndex(hitXs, hitYs, hitCount, e.x, e.y, TAP_RADIUS_DP * dp)
+            if (hit < 0) return false
+            hitSatellites[hit]?.let { onSatelliteTapped?.invoke(it) }
             performClick()
             return true
         }
@@ -145,73 +163,90 @@ class SkyOverlayView @JvmOverloads constructor(
         )
         val boresight = SkyMath.toEnu(frame.attitude.boresight)
         val now = System.currentTimeMillis()
-        val lockedById = frame.locked.associateBy { it.satellite.noradId }
+        val locked = frame.locked
 
         // Draw into an offscreen layer whenever something is locked, so a hole can be cleared
         // through everything drawn this frame (see drawHole).
-        val layer = if (frame.locked.isNotEmpty()) canvas.saveLayer(0f, 0f, w, h, null) else -1
+        val layer = if (locked.isNotEmpty()) canvas.saveLayer(0f, 0f, w, h, null) else -1
 
         drawHorizon(canvas, projector)
 
         // Dots, plus focus candidates near the boresight and positions of locked satellites.
         val snapshot = frame.snapshot
-        val candidates = HashMap<Int, Enu>()
-        val objectsById = HashMap<Int, SkyObject>()
-        val lockedPositions = HashMap<Int, Enu>()
-        val targets = ArrayList<HitTarget>()
-        val satellites = HashMap<Int, Satellite>()
+        candidates.clear()
+        candidateObjects.clear()
+        lockedPositions.clear()
+        hitCount = 0
         val focusedId = focusSelector.currentId
+        val focusedRaw = focusedId ?: NO_ID
         if (snapshot != null) {
             val dt = (now - snapshot.epochMillis) / 1000.0
             val candidateCos = cos(Math.toRadians(focusSelector.exitDeg + 1.0))
             val skyDark = snapshot.sunElevationDeg <= Visibility.DARK_SKY_SUN_ELEVATION_DEG
             val minSinEl = kotlin.math.sin(Math.toRadians(Visibility.MIN_ELEVATION_DEG))
-            for (obj in snapshot.objects) {
-                val p = obj.positionAfter(dt)
-                if (p.u <= 0) continue // below the horizon
+            val objects = snapshot.objects
+            ensureHitCapacity(objects.size)
+            for (i in objects.indices) {
+                val obj = objects[i]
+                // SkyObject.positionAfter(dt) and Enu.unit() inlined: same arithmetic, no objects.
+                val pos = obj.position
+                val vel = obj.velocity
+                val pe = pos.e + vel.e * dt
+                val pn = pos.n + vel.n * dt
+                val pu = pos.u + vel.u * dt
+                if (pu <= 0) continue // below the horizon
                 val id = obj.satellite.noradId
-                val unit = p.unit()
-                if ((unit dot boresight) > candidateCos) {
-                    candidates[id] = unit
-                    objectsById[id] = obj
+                val norm = sqrt(pe * pe + pn * pn + pu * pu)
+                val ue = pe / norm
+                val un = pn / norm
+                val uu = pu / norm
+                if (ue * boresight.e + un * boresight.n + uu * boresight.u > candidateCos) {
+                    candidates[id] = Enu(ue, un, uu)
+                    candidateObjects[id] = obj
                 }
-                if (id in lockedById) lockedPositions[id] = p
-                val sp = projector.project(p) ?: continue
-                if (sp.x < -MARGIN || sp.x > w + MARGIN || sp.y < -MARGIN || sp.y > h + MARGIN) continue
-                targets += HitTarget(id, sp.x, sp.y)
-                satellites[id] = obj.satellite
-                if (id != focusedId && id !in lockedById) {
+                val isLocked = lockedEntry(locked, id) != null
+                if (isLocked) lockedPositions[id] = Enu(pe, pn, pu)
+                if (!projector.project(pe, pn, pu, pt)) continue
+                val x = pt[0]
+                val y = pt[1]
+                if (x < -MARGIN || x > w + MARGIN || y < -MARGIN || y > h + MARGIN) continue
+                hitXs[hitCount] = x
+                hitYs[hitCount] = y
+                hitSatellites[hitCount] = obj.satellite
+                hitCount++
+                if (id != focusedRaw && !isLocked) {
                     val mag = obj.magnitude
                     val likelyVisible = skyDark && mag != null && mag <= Visibility.NAKED_EYE_LIMIT_MAG &&
-                        unit.u >= minSinEl
+                        uu >= minSinEl
                     if (likelyVisible) {
-                        canvas.drawCircle(sp.x, sp.y, VISIBLE_DOT_RADIUS_DP * dp, visibleDotPaint)
+                        canvas.drawCircle(x, y, VISIBLE_DOT_RADIUS_DP * dp, visibleDotPaint)
                     } else {
-                        canvas.drawCircle(sp.x, sp.y, DOT_RADIUS_DP * dp, dotPaint)
+                        canvas.drawCircle(x, y, DOT_RADIUS_DP * dp, dotPaint)
                     }
                 }
             }
         }
-        hitTargets = targets
-        hitSatellites = satellites
 
         // Focus selection, with a callback when it changes.
         val newFocusId = focusSelector.update(boresight, candidates)
         if (newFocusId != focusedId) {
             focusedSince = now
-            onFocusChanged?.invoke(newFocusId?.let { objectsById[it]?.satellite })
+            onFocusChanged?.invoke(newFocusId?.let { candidateObjects[it]?.satellite })
         }
+        val focusLocked = newFocusId?.let { lockedEntry(locked, it) }
 
         // Locked satellites: their own color, path, label; edge arrow when off-screen.
-        for (tracked in frame.locked) {
+        for (i in locked.indices) {
+            val tracked = locked[i]
             val id = tracked.satellite.noradId
             val color = LOCK_COLORS[(tracked.colorSlot ?: 0) % LOCK_COLORS.size]
             drawTrack(canvas, projector, tracked.track, now, color)
             val pos = lockedPositions[id]
-            val sp = pos?.let { projector.project(it) }
-            if (sp != null && sp.x in 0f..w && sp.y in 0f..h) {
-                drawMarker(canvas, sp, color, LOCKED_DOT_RADIUS_DP * dp, ringGap = 6 * dp)
-                drawLabel(canvas, sp, LOCKED_DOT_RADIUS_DP * dp, tracked.satellite.name)
+            if (pos != null && projector.project(pos.e, pos.n, pos.u, pt) &&
+                pt[0] >= 0f && pt[0] <= w && pt[1] >= 0f && pt[1] <= h
+            ) {
+                drawMarker(canvas, pt[0], pt[1], color, LOCKED_DOT_RADIUS_DP * dp, ringGap = 6 * dp)
+                drawLabel(canvas, pt[0], pt[1], LOCKED_DOT_RADIUS_DP * dp, tracked.satellite.name)
             } else {
                 // Off-screen, behind the camera, or below the horizon: point the way.
                 val dir = pos ?: tracked.details?.let {
@@ -222,24 +257,27 @@ class SkyOverlayView @JvmOverloads constructor(
         }
 
         // Focused (but not locked) satellite: path, growing dot, label.
-        if (newFocusId != null && newFocusId !in lockedById) {
+        if (newFocusId != null && focusLocked == null) {
             val focus = frame.focus?.takeIf { it.satellite.noradId == newFocusId }
             if (focus != null) drawTrack(canvas, projector, focus.track, now, FOCUS_COLOR)
-            val sp = objectsById[newFocusId]?.let {
-                projector.project(it.positionAfter((now - snapshot!!.epochMillis) / 1000.0))
-            }
-            if (sp != null) {
-                val grow = min(1f, (now - focusedSince) / GROW_MS)
-                val r = (DOT_RADIUS_DP + (FOCUS_DOT_RADIUS_DP - DOT_RADIUS_DP) * grow) * dp
-                canvas.drawCircle(sp.x, sp.y, r, focusDotPaint)
-                canvas.drawCircle(sp.x, sp.y, r + 6 * dp * grow, focusRingPaint)
-                val name = focus?.satellite?.name ?: objectsById[newFocusId]?.satellite?.name
-                if (name != null) drawLabel(canvas, sp, r, name)
+            val obj = candidateObjects[newFocusId]
+            if (obj != null) {
+                val p = obj.positionAfter((now - snapshot!!.epochMillis) / 1000.0)
+                if (projector.project(p.e, p.n, p.u, pt)) {
+                    val x = pt[0]
+                    val y = pt[1]
+                    val grow = min(1f, (now - focusedSince) / GROW_MS)
+                    val r = (DOT_RADIUS_DP + (FOCUS_DOT_RADIUS_DP - DOT_RADIUS_DP) * grow) * dp
+                    canvas.drawCircle(x, y, r, focusDotPaint)
+                    canvas.drawCircle(x, y, r + 6 * dp * grow, focusRingPaint)
+                    drawLabel(canvas, x, y, r, focus?.satellite?.name ?: obj.satellite.name)
+                }
             }
         } else if (newFocusId != null) {
             // Focused and locked: just add the focus ring around its colored marker.
-            lockedPositions[newFocusId]?.let { projector.project(it) }?.let { sp ->
-                canvas.drawCircle(sp.x, sp.y, (LOCKED_DOT_RADIUS_DP + 11) * dp, focusRingPaint)
+            val pos = lockedPositions[newFocusId]
+            if (pos != null && projector.project(pos.e, pos.n, pos.u, pt)) {
+                canvas.drawCircle(pt[0], pt[1], (LOCKED_DOT_RADIUS_DP + 11) * dp, focusRingPaint)
             }
         }
 
@@ -247,15 +285,18 @@ class SkyOverlayView @JvmOverloads constructor(
         canvas.drawCircle(w / 2, h / 2, projector.radiusPx(focusSelector.enterDeg), reticlePaint)
 
         // Hole: a locked satellite in the reticle gets a clear window onto the camera feed.
-        val holeTracked = newFocusId?.let { lockedById[it] }
-        val holePoint = newFocusId?.let { lockedPositions[it] }?.let { projector.project(it) }
-        if (holeTracked == null || holePoint == null) {
+        val holeTracked = focusLocked
+        val holePos = newFocusId?.let { lockedPositions[it] }
+        val isOpen = holeTracked != null && holePos != null &&
+            projector.project(holePos.e, holePos.n, holePos.u, pt)
+        val holeX = pt[0]
+        val holeY = pt[1]
+        if (!isOpen) {
             holeTargetId = null
         } else if (holeTargetId != newFocusId) {
             holeTargetId = newFocusId
             holeSince = now
         }
-        val isOpen = holeTracked != null && holePoint != null
         if (isOpen != holeOpen) {
             holeOpen = isOpen
             post { onHoleChanged?.invoke(isOpen) }
@@ -264,56 +305,76 @@ class SkyOverlayView @JvmOverloads constructor(
         val zoomed = isOpen && zoom > 1.01f && magnifier != null
         val fullRadius = (HOLE_RADIUS_DP + (LENS_RADIUS_DP - HOLE_RADIUS_DP) * ((zoom - 1f).coerceIn(0f, 1f))) * dp
         val holeRadius = if (isOpen) fullRadius * min(1f, (now - holeSince) / HOLE_OPEN_MS) else 0f
-        if (holeRadius > 0f) canvas.drawCircle(holePoint!!.x, holePoint.y, holeRadius, clearPaint)
+        if (holeRadius > 0f) canvas.drawCircle(holeX, holeY, holeRadius, clearPaint)
         if (layer >= 0) canvas.restoreToCount(layer)
 
         // Zoom lens: ask the camera for the crop under the hole, draw the latest one inside it.
         magnifier?.request = if (zoomed) {
-            MagnifyRequest(holePoint!!.x, holePoint.y, 2 * fullRadius / zoom, w, h)
+            MagnifyRequest(holeX, holeY, 2 * fullRadius / zoom, w, h)
         } else null
-        if (zoomed && holeRadius > 0f) drawLens(canvas, holePoint!!, holeRadius, now)
+        if (zoomed && holeRadius > 0f) drawLens(canvas, holeX, holeY, holeRadius, now)
 
         if (holeRadius > 0f) {
             val color = LOCK_COLORS[(holeTracked!!.colorSlot ?: 0) % LOCK_COLORS.size]
-            drawHoleFrame(canvas, holePoint!!, holeRadius, color, holeTracked.satellite.name)
+            drawHoleFrame(canvas, holeX, holeY, holeRadius, color, holeTracked.satellite.name)
         }
     }
 
-    private fun drawLens(canvas: Canvas, c: ScreenPoint, radius: Float, now: Long) {
+    /** The locked entry for [id], or null. A plain scan: there are only ever a few locks. */
+    private fun lockedEntry(locked: List<TrackedSatellite>, id: Int): TrackedSatellite? {
+        for (i in locked.indices) {
+            if (locked[i].satellite.noradId == id) return locked[i]
+        }
+        return null
+    }
+
+    private fun ensureHitCapacity(n: Int) {
+        if (hitXs.size >= n) return
+        hitXs = FloatArray(n)
+        hitYs = FloatArray(n)
+        hitSatellites = arrayOfNulls(n)
+    }
+
+    private fun drawLens(canvas: Canvas, cx: Float, cy: Float, radius: Float, now: Long) {
         val frame = magnifier?.latest ?: return
         if (now - frame.timestampMillis > LENS_STALE_MS) return
         lensClip.reset()
-        lensClip.addCircle(c.x, c.y, radius, Path.Direction.CW)
-        lensRect.set(c.x - radius, c.y - radius, c.x + radius, c.y + radius)
+        lensClip.addCircle(cx, cy, radius, Path.Direction.CW)
+        lensRect.set(cx - radius, cy - radius, cx + radius, cy + radius)
         canvas.withClip(lensClip) { drawBitmap(frame.bitmap, null, lensRect, lensPaint) }
-        val label = "%.1fx".format(zoom)
-        canvas.drawText(label, c.x - labelPaint.measureText(label) / 2, c.y + radius + 30 * dp, labelPaint)
+        // Formatting allocates heavily, so only redo it when the zoom changes.
+        if (zoom != lensLabelZoom) {
+            lensLabel = "%.1fx".format(zoom)
+            lensLabelZoom = zoom
+        }
+        val label = lensLabel
+        canvas.drawText(label, cx - labelPaint.measureText(label) / 2, cy + radius + 30 * dp, labelPaint)
     }
 
     /** Thin ring plus four aiming ticks around the hole, and the name outside it. */
-    private fun drawHoleFrame(canvas: Canvas, c: ScreenPoint, radius: Float, color: Int, name: String) {
+    private fun drawHoleFrame(canvas: Canvas, cx: Float, cy: Float, radius: Float, color: Int, name: String) {
         holeRingPaint.color = color
         holeRingPaint.strokeWidth = 1.5f * dp
-        canvas.drawCircle(c.x, c.y, radius + 2 * dp, holeRingPaint)
+        canvas.drawCircle(cx, cy, radius + 2 * dp, holeRingPaint)
         holeRingPaint.strokeWidth = 2.5f * dp
         val tickIn = radius + 6 * dp
         val tickOut = radius + 14 * dp
-        canvas.drawLine(c.x, c.y - tickOut, c.x, c.y - tickIn, holeRingPaint)
-        canvas.drawLine(c.x, c.y + tickIn, c.x, c.y + tickOut, holeRingPaint)
-        canvas.drawLine(c.x - tickOut, c.y, c.x - tickIn, c.y, holeRingPaint)
-        canvas.drawLine(c.x + tickIn, c.y, c.x + tickOut, c.y, holeRingPaint)
-        drawLabel(canvas, c, radius + 8 * dp, name)
+        canvas.drawLine(cx, cy - tickOut, cx, cy - tickIn, holeRingPaint)
+        canvas.drawLine(cx, cy + tickIn, cx, cy + tickOut, holeRingPaint)
+        canvas.drawLine(cx - tickOut, cy, cx - tickIn, cy, holeRingPaint)
+        canvas.drawLine(cx + tickIn, cy, cx + tickOut, cy, holeRingPaint)
+        drawLabel(canvas, cx, cy, radius + 8 * dp, name)
     }
 
-    private fun drawMarker(canvas: Canvas, sp: ScreenPoint, color: Int, radius: Float, ringGap: Float) {
+    private fun drawMarker(canvas: Canvas, x: Float, y: Float, color: Int, radius: Float, ringGap: Float) {
         markPaint.color = color
         ringPaint.color = color
-        canvas.drawCircle(sp.x, sp.y, radius, markPaint)
-        canvas.drawCircle(sp.x, sp.y, radius + ringGap, ringPaint)
+        canvas.drawCircle(x, y, radius, markPaint)
+        canvas.drawCircle(x, y, radius + ringGap, ringPaint)
     }
 
-    private fun drawLabel(canvas: Canvas, sp: ScreenPoint, radius: Float, name: String) {
-        canvas.drawText(name, sp.x + radius + 10 * dp, sp.y - radius, labelPaint)
+    private fun drawLabel(canvas: Canvas, x: Float, y: Float, radius: Float, name: String) {
+        canvas.drawText(name, x + radius + 10 * dp, y - radius, labelPaint)
     }
 
     private fun drawEdgeArrow(
@@ -355,44 +416,54 @@ class SkyOverlayView @JvmOverloads constructor(
     private fun drawHorizon(canvas: Canvas, projector: Projector) {
         path.reset()
         var penDown = false
-        for (az in 0..360 step 3) {
-            val sp = projector.project(SkyMath.toEnu(AzEl(az.toDouble(), 0.0)))
-            if (sp == null) {
+        for (dir in HORIZON) {
+            if (!projector.project(dir.e, dir.n, dir.u, pt)) {
                 penDown = false
             } else if (penDown) {
-                path.lineTo(sp.x, sp.y)
+                path.lineTo(pt[0], pt[1])
             } else {
-                path.moveTo(sp.x, sp.y)
+                path.moveTo(pt[0], pt[1])
                 penDown = true
             }
         }
         canvas.drawPath(path, horizonPaint)
 
-        for ((label, az) in CARDINALS) {
-            val sp = projector.project(SkyMath.toEnu(AzEl(az, 1.5))) ?: continue
-            canvas.drawText(label, sp.x - cardinalPaint.measureText(label) / 2, sp.y, cardinalPaint)
+        for (i in CARDINAL_LABELS.indices) {
+            val dir = CARDINAL_DIRS[i]
+            if (!projector.project(dir.e, dir.n, dir.u, pt)) continue
+            val label = CARDINAL_LABELS[i]
+            canvas.drawText(label, pt[0] - cardinalPaint.measureText(label) / 2, pt[1], cardinalPaint)
         }
     }
 
     /** Past part dashed and dimmer, future solid, with a tick each minute; only above the horizon. */
     private fun drawTrack(canvas: Canvas, projector: Projector, track: List<TrackPoint>, now: Long, color: Int) {
-        if (track.size < 2) return
-        val projected = track.map { pt -> if (pt.direction.u > 0) projector.project(pt.direction) else null }
+        val n = track.size
+        if (n < 2) return
+        if (trackOk.size < n) {
+            trackXy = FloatArray(2 * n)
+            trackOk = BooleanArray(n)
+        }
+        val xy = trackXy
+        for (i in 0 until n) {
+            val d = track[i].direction
+            trackOk[i] = d.u > 0 && projector.project(d.e, d.n, d.u, xy, 2 * i)
+        }
         trackPaint.color = color
         markPaint.color = color
-        for (i in 1 until track.size) {
-            val a = projected[i - 1] ?: continue
-            val b = projected[i] ?: continue
+        for (i in 1 until n) {
+            if (!trackOk[i - 1] || !trackOk[i]) continue
             val past = track[i].epochMillis <= now
             trackPaint.pathEffect = if (past) dashEffect else null
             trackPaint.alpha = if (past) 150 else 255
-            canvas.drawLine(a.x, a.y, b.x, b.y, trackPaint)
+            canvas.drawLine(xy[2 * i - 2], xy[2 * i - 1], xy[2 * i], xy[2 * i + 1], trackPaint)
         }
-        val first = track.first().epochMillis
-        track.forEachIndexed { i, pt ->
-            val sp = projected[i] ?: return@forEachIndexed
-            if (pt.epochMillis > now && (pt.epochMillis - first) % 60_000L == 0L) {
-                canvas.drawCircle(sp.x, sp.y, 3 * dp, markPaint)
+        val first = track[0].epochMillis
+        for (i in 0 until n) {
+            if (!trackOk[i]) continue
+            val t = track[i].epochMillis
+            if (t > now && (t - first) % 60_000L == 0L) {
+                canvas.drawCircle(xy[2 * i], xy[2 * i + 1], 3 * dp, markPaint)
             }
         }
     }
@@ -447,6 +518,12 @@ class SkyOverlayView @JvmOverloads constructor(
         private const val MARGIN = 20f
         /** Used until CameraX reports the real FOV (or if camera permission is denied). */
         private const val DEFAULT_LONG_FOV_DEG = 70.0
-        private val CARDINALS = listOf("N" to 0.0, "E" to 90.0, "S" to 180.0, "W" to 270.0)
+        private const val INITIAL_HIT_CAPACITY = 1024
+        /** Stands in for "no focus" in the per-satellite loop; NORAD ids are positive. */
+        private const val NO_ID = Int.MIN_VALUE
+        /** Horizon polyline, every 3 degrees of azimuth (0..360 inclusive, so it closes). */
+        private val HORIZON = (0..360 step 3).map { SkyMath.toEnu(AzEl(it.toDouble(), 0.0)) }.toTypedArray()
+        private val CARDINAL_LABELS = arrayOf("N", "E", "S", "W")
+        private val CARDINAL_DIRS = doubleArrayOf(0.0, 90.0, 180.0, 270.0).map { SkyMath.toEnu(AzEl(it, 1.5)) }.toTypedArray()
     }
 }

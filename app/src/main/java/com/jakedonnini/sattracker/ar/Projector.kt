@@ -4,6 +4,7 @@ import com.jakedonnini.sattracker.geometry.Enu
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.math.tan
 
 /** A projected point in view pixels (origin top-left, y down). */
@@ -34,10 +35,20 @@ class Projector(
      * Returns null when it's behind or nearly perpendicular to the camera axis.
      */
     fun project(trueEnu: Enu): ScreenPoint? {
+        val out = FloatArray(2)
+        if (!project(trueEnu.e, trueEnu.n, trueEnu.u, out, 0)) return null
+        return ScreenPoint(out[0], out[1])
+    }
+
+    /**
+     * Allocation-free [project] for per-frame hot paths: writes x, y to [out] at [offset] and
+     * [offset] + 1, and returns false (leaving [out] untouched) when [project] would return null.
+     */
+    fun project(trueE: Double, trueN: Double, trueU: Double, out: FloatArray, offset: Int = 0): Boolean {
         // True azimuth α → magnetic azimuth α − δ (rotate about Up).
-        val e = trueEnu.e * cosD - trueEnu.n * sinD
-        val n = trueEnu.n * cosD + trueEnu.e * sinD
-        val u = trueEnu.u
+        val e = trueE * cosD - trueN * sinD
+        val n = trueN * cosD + trueE * sinD
+        val u = trueU
 
         // Device coordinates: d = Rᵀ w.
         val r = rotation
@@ -46,11 +57,10 @@ class Projector(
         val dz = r[2] * e + r[5] * n + r[8] * u
 
         val depth = -dz
-        if (depth <= MIN_DEPTH_RATIO * trueEnu.norm) return null
-        return ScreenPoint(
-            (viewWidth / 2 + focalPx * dx / depth).toFloat(),
-            (viewHeight / 2 - focalPx * dy / depth).toFloat(),
-        )
+        if (depth <= MIN_DEPTH_RATIO * sqrt(trueE * trueE + trueN * trueN + trueU * trueU)) return false
+        out[offset] = (viewWidth / 2 + focalPx * dx / depth).toFloat()
+        out[offset + 1] = (viewHeight / 2 - focalPx * dy / depth).toFloat()
+        return true
     }
 
     /**

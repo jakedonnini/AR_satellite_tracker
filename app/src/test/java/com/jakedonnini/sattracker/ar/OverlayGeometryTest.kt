@@ -11,9 +11,11 @@ class OverlayGeometryTest {
 
     @Test
     fun `nearest picks the closest target inside the radius`() {
-        val targets = listOf(HitTarget(1, 100f, 100f), HitTarget(2, 130f, 100f), HitTarget(3, 500f, 500f))
-        assertEquals(2, OverlayGeometry.nearest(targets, 125f, 102f, radius = 40f)?.id)
-        assertNull(OverlayGeometry.nearest(targets, 300f, 300f, radius = 40f))
+        val xs = floatArrayOf(100f, 130f, 500f, 125f)
+        val ys = floatArrayOf(100f, 100f, 500f, 102f)
+        // Only the first three are live; the stale fourth entry must be ignored.
+        assertEquals(1, OverlayGeometry.nearestIndex(xs, ys, 3, 125f, 102f, radius = 40f))
+        assertEquals(-1, OverlayGeometry.nearestIndex(xs, ys, 3, 300f, 300f, radius = 40f))
     }
 
     @Test
