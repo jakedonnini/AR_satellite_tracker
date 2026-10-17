@@ -98,6 +98,26 @@ class GlobeController(
 
     fun flyToUser() = call("flyToUser", "")
 
+    /** Which visual layers the globe draws (design doc §11.7); all on by default. */
+    @Serializable
+    data class Layers(
+        val visibility: Boolean = true,
+        val fov: Boolean = true,
+        val horizon: Boolean = true,
+        val inView: Boolean = true,
+        val outOfView: Boolean = true,
+    )
+
+    private var layers = Layers()
+
+    fun setLayers(next: Layers) {
+        layers = next
+        call("setLayers", json.encodeToString(next))
+    }
+
+    /** Re-sends state the page may have missed while it was still loading. */
+    fun resendLayers() = call("setLayers", json.encodeToString(layers))
+
     fun onShown() {
         webView.onResume()
         call("resume", "")
