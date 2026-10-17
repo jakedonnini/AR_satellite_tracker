@@ -341,7 +341,7 @@ The golden zone always hugs the night side of the **terminator** (the sunset/sun
 
 ### 12.5 AR screen
 
-- **Dots:** satellites that pass all four criteria for **you** are drawn **green** (the same green as the globe). The rest stay white.
+- **Dots:** satellites that pass all four criteria for **you** are drawn **green** (the same green as the globe), graded dull → bright by `Visibility.visibilityScore`. That's the estimated magnitude (5 → dullest, 2 or brighter → brightest) weighted by how dark your sky is (Sun at −6° → half, −18° → full). There are 6 pre-built paint levels, so the per-frame loop stays allocation-free. The rest stay white.
 - **Info card:** a visibility line, e.g. `Likely visible · mag 3.8`, or the reason it isn't (`In Earth's shadow`, `Sky too bright (Sun −2°)`, `Too low`, `Too faint · mag 6.4`).
 - **HUD:** shows the Sun's elevation at the user and the sky state (day / civil / nautical / astronomical twilight / night).
 

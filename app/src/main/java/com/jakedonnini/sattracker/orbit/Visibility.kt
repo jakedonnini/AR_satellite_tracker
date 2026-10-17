@@ -129,5 +129,17 @@ object Visibility {
         return VisibilityEstimate(status, magnitude, sunlit, observerSunElevationDeg)
     }
 
+    /**
+     * 0..1 "how easy to see" for a likely-visible satellite, for brightness-graded markers:
+     * its estimated magnitude (at the naked-eye limit → 0, three magnitudes brighter → 1),
+     * weighted by how dark the sky is (Sun at −6° → half weight, −18° or lower → full).
+     * Same idea as the globe's gradient (design doc §11.1a). Pure and allocation-free.
+     */
+    fun visibilityScore(magnitude: Double, sunElevationDeg: Double): Double {
+        val brightness = ((NAKED_EYE_LIMIT_MAG - magnitude) / 3.0).coerceIn(0.0, 1.0)
+        val darkness = ((-sunElevationDeg - 6.0) / 12.0).coerceIn(0.0, 1.0)
+        return brightness * (0.5 + 0.5 * darkness)
+    }
+
     private fun dot(a: DoubleArray, b: DoubleArray) = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
