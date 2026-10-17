@@ -73,6 +73,9 @@ data class SatelliteDetails(
  *
  * [snapshot] is the bulk path: propagators are built once per catalog, and the
  * TEME→topocentric transform is computed once per call and shared by every satellite.
+ * The bulk paths call [TLEPropagator.getPVCoordinates] with just a date, which runs SGP4 and
+ * returns the TEME state directly; the generic `getPVCoordinates(date, frame)` goes through a
+ * full `propagate()` (spacecraft state, attitude, orbit) and makes far more garbage.
  * It must only be called from one thread at a time (propagators are stateful).
  * [track] and [details] build their own propagator, so they're safe to call concurrently.
  */
@@ -128,7 +131,7 @@ class SkyModel(
         val data = FloatArray(tracked.size * 6) { Float.NaN }
         tracked.forEachIndexed { i, (_, propagator) ->
             try {
-                val pv = temeToItrf.transformPVCoordinates(propagator.getPVCoordinates(date, teme))
+                val pv = temeToItrf.transformPVCoordinates(propagator.getPVCoordinates(date))
                 val o = i * 6
                 data[o] = (pv.position.x / 1000).toFloat()
                 data[o + 1] = (pv.position.y / 1000).toFloat()
@@ -191,8 +194,11 @@ class SkyModel(
 
         val objects = source.mapNotNull { (sat, propagator) ->
             try {
-                val pvTeme = propagator.getPVCoordinates(date, teme)
-                // Topocentric axes: X = east, Y = north, Z = zenith.
+                val pvTeme = propagator.getPVCoordinates(date)
+                // Topocentric axes: X = east, Y = north, Z = zenith. Most of the catalog is below
+                // the mask, so test the position alone before transforming the full state.
+                val above = temeToTopo.transformPosition(pvTeme.position)
+                if (above.z / above.norm < minSinEl) return@mapNotNull null
                 val pv = temeToTopo.transformPVCoordinates(pvTeme)
                 val p = pv.position
                 if (p.z / p.norm < minSinEl) return@mapNotNull null

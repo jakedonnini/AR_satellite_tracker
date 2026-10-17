@@ -35,7 +35,9 @@ class Magnifier : ImageAnalysis.Analyzer {
 
     override fun analyze(image: ImageProxy) {
         image.use {
-            streamSize = it.width to it.height
+            if (streamSize?.let { s -> s.first == it.width && s.second == it.height } != true) {
+                streamSize = it.width to it.height
+            }
             val req = request ?: return
             val rotation = it.imageInfo.rotationDegrees
             val crop = ZoomCrop.cropForScreen(
@@ -45,6 +47,8 @@ class Magnifier : ImageAnalysis.Analyzer {
             latest = MagnifiedFrame(cropToBitmap(it, crop, rotation), req, System.currentTimeMillis())
         }
     }
+
+    private var pixelBuffer = IntArray(0)
 
     private fun cropToBitmap(image: ImageProxy, crop: UprightCrop, rotation: Int): Bitmap {
         // Output at the crop's native resolution (capped so tiny zooms stay cheap).
@@ -66,12 +70,15 @@ class Magnifier : ImageAnalysis.Analyzer {
         val w = image.width
         val h = image.height
 
-        val pixels = IntArray(n * n)
+        // Reused across frames (analysis runs on one thread); createBitmap copies it.
+        if (pixelBuffer.size < n * n) pixelBuffer = IntArray(MAX_OUTPUT_PX * MAX_OUTPUT_PX)
+        val pixels = pixelBuffer
         for (oy in 0 until n) {
             for (ox in 0 until n) {
-                val (bxF, byF) = ZoomCrop.uprightToBuffer(left + (ox + 0.5f) * step, top + (oy + 0.5f) * step, w, h, rotation)
-                val bx = bxF.toInt()
-                val by = byF.toInt()
+                val ux = left + (ox + 0.5f) * step
+                val uy = top + (oy + 0.5f) * step
+                val bx = ZoomCrop.uprightToBufferX(ux, uy, w, rotation).toInt()
+                val by = ZoomCrop.uprightToBufferY(ux, uy, h, rotation).toInt()
                 if (bx < 0 || by < 0 || bx >= w || by >= h) {
                     pixels[oy * n + ox] = 0xFF000000.toInt()
                     continue
@@ -87,7 +94,7 @@ class Magnifier : ImageAnalysis.Analyzer {
                 pixels[oy * n + ox] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
             }
         }
-        return Bitmap.createBitmap(pixels, n, n, Bitmap.Config.ARGB_8888)
+        return Bitmap.createBitmap(pixels, 0, n, n, n, Bitmap.Config.ARGB_8888)
     }
 
     private companion object {
