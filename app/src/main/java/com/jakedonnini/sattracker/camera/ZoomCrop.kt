@@ -50,10 +50,23 @@ object ZoomCrop {
      * where [rotationDegrees] is how far the buffer must be turned clockwise to be upright.
      */
     fun uprightToBuffer(x: Float, y: Float, imageW: Int, imageH: Int, rotationDegrees: Int): Pair<Float, Float> =
+        uprightToBufferX(x, y, imageW, rotationDegrees) to uprightToBufferY(x, y, imageH, rotationDegrees)
+
+    /** The x half of [uprightToBuffer], without allocating (the magnifier calls it per pixel). */
+    fun uprightToBufferX(x: Float, y: Float, imageW: Int, rotationDegrees: Int): Float =
         when (((rotationDegrees % 360) + 360) % 360) {
-            90 -> y to (imageH - x)
-            180 -> (imageW - x) to (imageH - y)
-            270 -> (imageW - y) to x
-            else -> x to y
+            90 -> y
+            180 -> imageW - x
+            270 -> imageW - y
+            else -> x
+        }
+
+    /** The y half of [uprightToBuffer], without allocating (the magnifier calls it per pixel). */
+    fun uprightToBufferY(x: Float, y: Float, imageH: Int, rotationDegrees: Int): Float =
+        when (((rotationDegrees % 360) + 360) % 360) {
+            90 -> imageH - x
+            180 -> imageH - y
+            270 -> x
+            else -> y
         }
 }

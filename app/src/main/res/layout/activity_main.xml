@@ -173,7 +173,8 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_gravity="top"
-            android:gravity="center_vertical"
+            android:baselineAligned="false"
+            android:gravity="top"
             android:orientation="horizontal"
             android:padding="12dp">
 
@@ -199,12 +200,87 @@
                     android:visibility="gone" />
             </FrameLayout>
 
-            <Button
-                android:id="@+id/centerOnMe"
-                style="@style/OverlayButton"
+            <!-- Right column: actions, then the Layers dropdown opening beneath them. -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
-                android:text="@string/center_on_me"
-                android:visibility="gone" />
+                android:gravity="end"
+                android:orientation="vertical">
+
+                <Button
+                    android:id="@+id/centerOnMe"
+                    style="@style/OverlayButton"
+                    android:text="@string/center_on_me"
+                    android:visibility="gone" />
+
+                <Button
+                    android:id="@+id/layersButton"
+                    style="@style/OverlayButton"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/layers"
+                    android:visibility="gone" />
+
+                <LinearLayout
+                    android:id="@+id/layersPanel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_panel"
+                    android:orientation="vertical"
+                    android:paddingStart="8dp"
+                    android:paddingTop="4dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="4dp"
+                    android:visibility="gone">
+
+                    <CheckBox
+                        android:id="@+id/layerVisibility"
+                        android:layout_width="wrap_content"
+                        android:layout_height="40dp"
+                        android:buttonTint="#FFFFFF"
+                        android:checked="true"
+                        android:text="@string/layer_visibility"
+                        android:textColor="#FFFFFF"
+                        android:textSize="14sp" />
+                    <CheckBox
+                        android:id="@+id/layerFov"
+                        android:layout_width="wrap_content"
+                        android:layout_height="40dp"
+                        android:buttonTint="#FFFFFF"
+                        android:checked="true"
+                        android:text="@string/layer_fov"
+                        android:textColor="#FFFFFF"
+                        android:textSize="14sp" />
+                    <CheckBox
+                        android:id="@+id/layerHorizon"
+                        android:layout_width="wrap_content"
+                        android:layout_height="40dp"
+                        android:buttonTint="#FFFFFF"
+                        android:checked="true"
+                        android:text="@string/layer_horizon"
+                        android:textColor="#FFFFFF"
+                        android:textSize="14sp" />
+                    <CheckBox
+                        android:id="@+id/layerInView"
+                        android:layout_width="wrap_content"
+                        android:layout_height="40dp"
+                        android:buttonTint="#FFFFFF"
+                        android:checked="true"
+                        android:text="@string/layer_in_view"
+                        android:textColor="#FFFFFF"
+                        android:textSize="14sp" />
+                    <CheckBox
+                        android:id="@+id/layerOutOfView"
+                        android:layout_width="wrap_content"
+                        android:layout_height="40dp"
+                        android:buttonTint="#FFFFFF"
+                        android:checked="true"
+                        android:text="@string/layer_out_of_view"
+                        android:textColor="#FFFFFF"
+                        android:textSize="14sp" />
+                </LinearLayout>
+            </LinearLayout>
         </LinearLayout>
 
         <!-- Bottom stack: loading bar while starting up, then the screen toggle. -->
