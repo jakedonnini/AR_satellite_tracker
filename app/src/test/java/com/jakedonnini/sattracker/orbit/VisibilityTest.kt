@@ -54,6 +54,20 @@ class VisibilityTest {
     }
 
     @Test
+    fun `visibility score grades brightness and sky darkness`() {
+        // At the naked-eye limit: dullest, whatever the sky.
+        assertEquals(0.0, Visibility.visibilityScore(5.0, -20.0), 1e-9)
+        // Three magnitudes brighter under a fully dark sky: brightest.
+        assertEquals(1.0, Visibility.visibilityScore(2.0, -20.0), 1e-9)
+        // Same satellite at the end of civil twilight: half weight.
+        assertEquals(0.5, Visibility.visibilityScore(2.0, -6.0), 1e-9)
+        // Brighter than magnitude 2 doesn't exceed 1; the ISS at -2 is still 1.
+        assertEquals(1.0, Visibility.visibilityScore(-2.0, -30.0), 1e-9)
+        // Monotonic in magnitude.
+        assertTrue(Visibility.visibilityScore(3.0, -12.0) > Visibility.visibilityScore(4.0, -12.0))
+    }
+
+    @Test
     fun `intrinsic magnitude heuristics`() {
         assertEquals(-1.3, Visibility.intrinsicMagnitude("ISS (ZARYA)", 25544), 0.0)
         assertEquals(5.5, Visibility.intrinsicMagnitude("STARLINK-1234", 44000), 0.0)

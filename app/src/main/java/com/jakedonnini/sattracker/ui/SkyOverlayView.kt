@@ -128,8 +128,18 @@ class SkyOverlayView @JvmOverloads constructor(
     })
 
     private val dotPaint = fill(Color.argb(220, 230, 240, 255))
-    /** Satellites that pass every naked-eye test for the user right now (design doc §12). */
-    private val visibleDotPaint = fill(VISIBLE_COLOR).apply { setShadowLayer(4 * dp, 0f, 0f, VISIBLE_COLOR) }
+    /**
+     * Satellites that pass every naked-eye test for the user right now (design doc §12), graded
+     * dull → bright green by [Visibility.visibilityScore]. Pre-built levels keep the dot loop
+     * allocation-free.
+     */
+    private val visibleDotPaints = Array(VISIBLE_LEVELS) { level ->
+        val c = lerpColor(VISIBLE_DULL_COLOR, VISIBLE_BRIGHT_COLOR, level / (VISIBLE_LEVELS - 1f))
+        fill(c).apply { setShadowLayer(4 * dp, 0f, 0f, c) }
+    }
+    private val visibleDotRadii = FloatArray(VISIBLE_LEVELS) { level ->
+        (VISIBLE_DOT_MIN_RADIUS_DP + (VISIBLE_DOT_MAX_RADIUS_DP - VISIBLE_DOT_MIN_RADIUS_DP) * level / (VISIBLE_LEVELS - 1f)) * dp
+    }
     private val focusDotPaint = fill(FOCUS_COLOR)
     private val focusRingPaint = stroke(FOCUS_COLOR, 2f)
     private val reticlePaint = stroke(Color.argb(160, 255, 255, 255), 1.5f)
@@ -228,7 +238,9 @@ class SkyOverlayView @JvmOverloads constructor(
                     val likelyVisible = skyDark && mag != null && mag <= Visibility.NAKED_EYE_LIMIT_MAG &&
                         uu >= minSinEl
                     if (likelyVisible) {
-                        canvas.drawCircle(x, y, VISIBLE_DOT_RADIUS_DP * dp, visibleDotPaint)
+                        val score = Visibility.visibilityScore(mag!!, snapshot.sunElevationDeg)
+                        val level = (score * (VISIBLE_LEVELS - 1) + 0.5).toInt()
+                        canvas.drawCircle(x, y, visibleDotRadii[level], visibleDotPaints[level])
                     } else {
                         canvas.drawCircle(x, y, DOT_RADIUS_DP * dp, dotPaint)
                     }
@@ -541,7 +553,18 @@ class SkyOverlayView @JvmOverloads constructor(
         )
 
         private const val DOT_RADIUS_DP = 2.5f
-        private const val VISIBLE_DOT_RADIUS_DP = 3.5f
+        private const val VISIBLE_DOT_MIN_RADIUS_DP = 2.8f
+        private const val VISIBLE_DOT_MAX_RADIUS_DP = 4.4f
+        /** Number of brightness steps for likely-visible dots (pre-built paints). */
+        private const val VISIBLE_LEVELS = 6
+        private val VISIBLE_DULL_COLOR = Color.rgb(46, 130, 70)
+        private val VISIBLE_BRIGHT_COLOR = Color.rgb(120, 255, 145)
+
+        private fun lerpColor(a: Int, b: Int, t: Float): Int = Color.rgb(
+            (Color.red(a) + (Color.red(b) - Color.red(a)) * t).toInt(),
+            (Color.green(a) + (Color.green(b) - Color.green(a)) * t).toInt(),
+            (Color.blue(a) + (Color.blue(b) - Color.blue(a)) * t).toInt(),
+        )
         private const val FOCUS_DOT_RADIUS_DP = 8f
         private const val LOCKED_DOT_RADIUS_DP = 7f
         private const val HOLE_RADIUS_DP = 26f
