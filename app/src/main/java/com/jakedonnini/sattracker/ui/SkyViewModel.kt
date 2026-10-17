@@ -6,6 +6,8 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jakedonnini.sattracker.SatTrackerApp
+import com.jakedonnini.sattracker.data.SatelliteInfo
+import com.jakedonnini.sattracker.data.SatelliteInfoRepository
 import com.jakedonnini.sattracker.ar.OverlayGeometry
 import com.jakedonnini.sattracker.orbit.Observer
 import com.jakedonnini.sattracker.orbit.OrekitInitializer
@@ -42,6 +44,13 @@ data class TrackedSatellite(
     val track: List<TrackPoint> = emptyList(),
     /** Palette slot for a locked satellite; null for one that's only focused. */
     val colorSlot: Int? = null,
+)
+
+/** The Analyze panel: the satellite, whether its online info is still loading, and the info. */
+data class AnalysisState(
+    val satellite: Satellite,
+    val loading: Boolean,
+    val info: SatelliteInfo? = null,
 )
 
 /** Which full-screen view is showing. */
@@ -100,6 +109,11 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
     /** Latest `/api/positions` body: Float64 epoch millis + Sun direction, then Float32 ECEF state per satellite. */
     @Volatile var globePositions: ByteArray? = null
         private set
+
+    private val infoRepository = SatelliteInfoRepository()
+    private val _analysis = MutableStateFlow<AnalysisState?>(null)
+    /** Non-null while the Analyze panel is open. */
+    val analysis: StateFlow<AnalysisState?> = _analysis.asStateFlow()
 
     @Volatile private var active = false
     private var focusJob: Job? = null
@@ -243,6 +257,21 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
                 if (it.satellite.noradId == id) it.copy(details = details, track = track ?: it.track) else it
             }
         }
+    }
+
+    /** Opens the Analyze panel and fetches the satellite's online info (cached per session). */
+    fun analyze(satellite: Satellite) {
+        _analysis.value = AnalysisState(satellite, loading = true)
+        viewModelScope.launch {
+            val info = infoRepository.fetch(satellite)
+            if (_analysis.value?.satellite?.noradId == satellite.noradId) {
+                _analysis.value = AnalysisState(satellite, loading = false, info = info)
+            }
+        }
+    }
+
+    fun closeAnalysis() {
+        _analysis.value = null
     }
 
     fun clearLocks() {

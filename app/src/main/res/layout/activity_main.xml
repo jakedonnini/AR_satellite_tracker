@@ -28,6 +28,15 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
+        <!-- Zoom for the camera hole; only shown while a locked satellite is centered. -->
+        <com.jakedonnini.sattracker.ui.VerticalSlider
+            android:id="@+id/zoomSlider"
+            android:layout_width="64dp"
+            android:layout_height="240dp"
+            android:layout_gravity="end|center_vertical"
+            android:layout_marginEnd="4dp"
+            android:visibility="gone" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -68,6 +77,14 @@
             android:gravity="center_horizontal"
             android:orientation="vertical"
             android:padding="16dp">
+
+            <!-- Shown when a locked satellite is in the reticle. -->
+            <Button
+                android:id="@+id/analyzeButton"
+                style="@style/OverlayButton"
+                android:layout_marginBottom="8dp"
+                android:text="@string/analyze"
+                android:visibility="gone" />
 
             <TextView
                 android:id="@+id/infoCard"
@@ -180,4 +197,88 @@
                 android:visibility="gone" />
         </LinearLayout>
     </FrameLayout>
+
+    <!-- ================= Analyze panel (over either screen) ================= -->
+    <ScrollView
+        android:id="@+id/analysisPanel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#E6000000"
+        android:clickable="true"
+        android:fillViewport="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="20dp">
+
+            <TextView
+                android:id="@+id/analysisTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#FFFFFF"
+                android:textSize="22sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/analysisSubtitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="#B0B0B0"
+                android:textSize="14sp" />
+
+            <FrameLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:minHeight="48dp">
+
+                <ImageView
+                    android:id="@+id/analysisImage"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:adjustViewBounds="true"
+                    android:contentDescription="@string/analysis_image_description"
+                    android:maxHeight="260dp"
+                    android:scaleType="fitCenter"
+                    android:visibility="gone" />
+
+                <ProgressBar
+                    android:id="@+id/analysisProgress"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:layout_gravity="center" />
+            </FrameLayout>
+
+            <TextView
+                android:id="@+id/analysisImageNote"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="#909090"
+                android:textSize="12sp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/analysisBody"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:lineSpacingExtra="3dp"
+                android:textColor="#FFFFFF"
+                android:textColorLink="#80DEEA"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/analysisClose"
+                style="@style/ScreenToggleButton"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="20dp"
+                android:text="@string/close" />
+        </LinearLayout>
+    </ScrollView>
 </FrameLayout>

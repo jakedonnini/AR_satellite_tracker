@@ -1,10 +1,14 @@
 <resources>
     <string name="app_name">Sat Tracker</string>
-    <string name="clear_selection">✕ Clear (%1$d)</string>
-    <string name="open_globe">🌐 Globe</string>
-    <string name="open_ar">📷 AR camera</string>
-    <string name="center_on_me">⌖ Center on me</string>
+    <string name="clear_selection">Clear (%1$d)</string>
+    <string name="open_globe">Globe</string>
+    <string name="open_ar">AR camera</string>
+    <string name="center_on_me">Center on me</string>
     <string name="globe_title">%1$,d LEO satellites</string>
     <string name="legend_visible">Likely visible (sunlit over a dark sky)</string>
     <string name="legend_visible_in_view">Likely visible, in your camera view</string>
+    <string name="analyze">Analyze</string>
+    <string name="analyze_named">Analyze %1$s</string>
+    <string name="close">Close</string>
+    <string name="analysis_image_description">Photo of the satellite or its constellation</string>
 </resources>
