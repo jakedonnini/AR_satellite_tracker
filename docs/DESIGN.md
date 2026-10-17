@@ -144,6 +144,83 @@ SGP4 output (TEME) → ITRF → `TopocentricFrame` at the observer → azimuth (
 - **GPS is not a jitter source:** a 50 m position error moves a satellite 500 km away by about 0.006°.
 - When the magnetometer reports low accuracy, prompt for a figure-8 calibration *(not built yet)*. A manual yaw-offset nudge is also still an option.
 
+### 6.2a Keeping heading locked: sources of truth (2026-10-17)
+
+**Problem.** With the phone held vertical, the AR heading slowly drifts (reported: to the right). Every overlay depends on heading, so this must be bounded. The fused heading has only two inputs: the gyro (smooth but drifts) and the magnetometer (absolute but easily disturbed). Possible causes, to be told apart by the on-device log below:
+
+1. **Gyro yaw drift that the compass correction never catches up with.** Indoors the sensor's own heading uncertainty is ±30°, so compass samples often land more than 15° from the estimate. `HeadingFusion` then blends them with the slow 60 s time constant. Its 3 s "persistent disagreement" reset needs *uninterrupted* outliers, so a compass that flickers in and out of the 15° band keeps the filter mostly in slow mode, and gyro drift shows through.
+2. **The compass itself is being pulled.** Nearby steel, electronics, a magnetic case, or the phone's own speaker or charging coil when held vertical. Then even a perfect filter follows a wrong north.
+3. **A frame mismatch when vertical** (gyro-only "game" frame vs. absolute frame). Checked analytically; it's not expected, but the log separates it out.
+
+**Diagnostics (built in).** `HeadingRecorder` writes `files/heading_log.csv` at 4 Hz with these columns:
+- **Headings:** raw compass, gyro-only and fused azimuth.
+- **Filter internals:** offset, last sample, innovation and state (WARMUP / TRACKING / OUTLIER).
+- **Accuracy:** magnetometer accuracy and the sensor's heading-uncertainty estimate.
+- **Magnetic field:** measured field strength and dip angle **versus the World Magnetic Model's values for this location**.
+
+The last one is the decisive interference test: the Earth's field is fixed for a given place, so a measured strength or dip that differs from the model by more than about 10–15 % or 5° means the compass is being disturbed right now. Pull the log with `adb shell run-as com.jakedonnini.sattracker cat files/heading_log.csv`.
+
+**Measured 2026-10-17 (Pixel 6 Pro, propped vertical and still indoors, 250 s, 4 Hz):**
+
+| Signal | Change over 250 s | Range | Verdict |
+|---|---|---|---|
+| Gyro-only heading (game rotation vector) | **+0.02°** | 0.04° | Rock steady; the gyro is **not** the drift source |
+| Compass heading (rotation vector) | −1.6° (drifted ~1.4° right over 2 min, then ~3° back) | **3.3°** | Wanders |
+| Fused heading | −1.6° | 3.0° | **Follows the compass**, exactly as designed |
+| Filter state | 99 % TRACKING, median innovation 0.09° | | The filter was never stuck in slow mode, so cause 1 is ruled out |
+| Field strength vs WMM | 49–55 µT vs 46.8 µT (**+13 %**) | | **Magnetic interference** (cause 2) |
+| Dip angle vs WMM | 63–68° vs 56.8° (**+8°**) | | Confirms it |
+
+*The sensor still reported "high" magnetometer accuracy throughout, so Android's own flag doesn't catch this.*
+
+**Conclusion:** the drift is the **compass wandering in a disturbed local field**. The fusion design (trust the compass long-term) passes that wander straight through. The gyro alone held heading to within 0.04° for four minutes, so the fix is to trust the gyro for the short term and get "north" from something better than an indoor compass:
+
+1. **Gyro-first heading.** Hold heading on the gyro and only let the compass correct it when the field is *clean*: strength within about 8 % of the World Magnetic Model and dip within about 3°. Even then, correct slowly (a time constant of minutes, not 8 s). Otherwise freeze the correction and show **"Compass disturbed: heading held by gyro"**.
+2. **Manual sky Align (option C below)** as the absolute reference. With gyro drift measured near 0°/min, one alignment on the Moon, a planet or a bright star should hold for a whole session.
+3. **Automatic bright-object re-alignment (D)** next; a full star tracker (E) only if needed.
+
+**Options for an extra source of truth, assessed:**
+
+| Option | Accuracy | Availability | Effort | Verdict |
+|---|---|---|---|---|
+| **A. Fix the fusion filter** (robust windowed median of compass offsets instead of the 15° / 60 s outlier switch) | Bounded by compass accuracy (about 2–5° outdoors, worse indoors) | Always | Small | **Do first.** Removes drift caused by the filter itself. |
+| **B. Magnetic-interference detection** (field strength and dip vs. WMM) | Doesn't add accuracy, but **knows when the compass is lying**: freeze on the gyro and warn instead of following a bad north | Always | Small | **Do.** Turns silent errors into a visible "Compass disturbed" state. |
+| **C. Manual sky alignment**: center the Moon, a planet, a bright star (or the Sun with a filter) in the reticle and tap Align; the app knows exactly where it should be | **About 0.2–0.5°**, limited by how well it's centered | Any time a bright, known object is visible (the Moon is up about half of all nights, often in daytime too; Venus and Jupiter most evenings) | Small/medium (Sun/Moon/planets are already in Orekit's DE-440 data; a ~50-star bright-star list is tiny) | **Do. Highest value per effort**, and it fixes compass bias as well as drift. The offset is stored and the gyro holds it. |
+| **D. Automatic bright-object tracker**: in the full-resolution analysis stream, look near the *predicted* positions of the Moon, bright planets and the brightest stars for a matching blob, and nudge heading when one is found | About 0.1–0.3° when locked | Clear twilight/night skies with the camera pointed near such an object. Phone sensors only reach magnitude ~1–2 in live frames, so mostly the Moon, planets and a dozen stars | Medium | **Good second step after C.** Because the predicted positions are already known, it's a small *verify* search, not a hard lost-in-space star-ID problem. |
+| **E. Full star tracker (plate solving)**: capture a long exposure, detect dozens of stars, match patterns against a catalog, solve the attitude (as in tetra3 or astrometry.net) | About 0.05–0.1° | Clear dark skies, phone held still for 1–2 s exposures; light pollution and clouds stop it. Live preview frames are too short to show faint stars | High (Camera2 manual exposure, star detection, pattern matching, attitude solve) | **Viable but not first.** It's the most accurate option and the inconsistency is real: it's useless under clouds, in cities, at dusk or in daytime. Worth it later as a "precision align" mode, building on D. |
+| F. ARCore Geospatial heading (VPS) | About 2–5° | Only where Street View coverage exists and with buildings in view; doesn't work pointed at the sky | Medium (would bring ARCore back) | **No.** Wrong place to look, and adds a large dependency. |
+| G. GPS course while walking | Coarse | Only while moving in a straight line, and gives the walking direction, not the phone's | Small | **No** for pointing. |
+| H. Sun/Moon auto-detection in daytime / twilight | About 0.2° | Moon or Sun in frame | Part of D | Folds into D. |
+
+**Recommended plan:**
+1. ~~Use the log to confirm the cause~~: done, it's compass interference (above).
+2. **A + B:** gyro-first fusion plus interference detection, showing "Compass disturbed: heading held by gyro".
+3. **C:** an Align button in the AR view (target picker: Moon, planets, brightest stars, Sun with a warning). The correction is saved and decays only when the compass is trustworthy again.
+4. **D:** automatic re-alignment on bright objects.
+5. **E** as an optional precision mode once D's detection pipeline exists.
+
+**Implemented (steps 2 and 3):**
+- `sensors/MagneticCheck.kt` compares the raw magnetometer field with the World Magnetic Model at the GPS fix (`GeomagneticField`). The compass counts as disturbed when the strength is more than 8% off or the dip is more than 3° off. A debounce applies: 0.5 s to call it disturbed, 3 s of clean readings to trust it again.
+- `sensors/HeadingFusion.kt` is gyro-first:
+  - **Clean compass:** a 3 s warm-up, then a time constant that grows with elapsed time up to 120 s. This works as a running mean of the compass.
+  - **Disturbed compass:** ψ is held, so only the gyro moves the heading.
+  - **Compass clean again:** the filter re-seeds from it.
+  - **Aligned:** the compass is ignored entirely.
+  - A gyro frame restart (sensors re-registered) re-applies the alignment relative to the compass. It is marked approximate and the HUD asks for a re-align.
+  - **Change from step 3:** the alignment does not decay back to the compass. It stays until the user clears it, because the gyro held yaw within 0.04° over four minutes in the measured test.
+- `orbit/SkyTargets.kt` lists Align targets between 10° and 75° elevation:
+  - Moon, Sun and planets come from Orekit DE-440.
+  - The 41 stars brighter than V 1.9 plus Polaris use SIMBAD J2000 positions, run through Orekit's frames so precession is included.
+  - Above 75° the azimuth is too sensitive to pointing error to be useful.
+  - The UI uses only the Moon for now (after field testing, a short list of stars and planets was more confusing than useful). The other targets stay in `SkyTargets` for automatic alignment (D).
+- The AR screen has an **Align** button. It reads "Align (compass off)" while the field is disturbed and "Aligned: Moon" once aligned. It opens an inline panel with no dialogs, toasts or confirmations:
+  - **Text:** the current heading source, then live guidance and the az/el error to the Moon.
+  - **Two buttons:** "Align with Moon" applies Δaz = Moon − boresight. "Use magnetometer" clears the alignment.
+  - **Guard instead of a confirmation popup:** "Align with Moon" is enabled only when the Moon is at least 5° up and centred within 3° in elevation. Elevation comes from gravity and can be trusted.
+  - Tapping Align again, or either button, closes the panel.
+- **Moon marker:** a blue diamond sits where the current heading puts the Moon, whenever it's above the horizon. It's dim and unlabelled in normal use. While aligning it's bright, labelled, and an edge arrow points to it when off screen.
+- **HUD:** a HEADING line shows the source (compass, gyro hold, or aligned on the Moon), the field verdict and its deviation from the model.
+
 ### 6.3 Projection to screen
 For each satellite ENU vector `s` (rotated into the magnetic world frame), convert to device coordinates: `d = Rᵀ s`.
 If `d.z ≥ 0`, the satellite is behind the camera, so skip it. Otherwise, using pinhole intrinsics:

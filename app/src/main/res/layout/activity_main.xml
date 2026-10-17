@@ -62,11 +62,25 @@
                     android:textSize="11sp" />
             </FrameLayout>
 
-            <Button
-                android:id="@+id/clearSelection"
-                style="@style/OverlayButton"
+            <!-- Right column: Clear selection, then heading alignment. -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
-                android:visibility="gone" />
+                android:gravity="end"
+                android:orientation="vertical">
+
+                <Button
+                    android:id="@+id/clearSelection"
+                    style="@style/OverlayButton"
+                    android:layout_marginBottom="8dp"
+                    android:visibility="gone" />
+
+                <Button
+                    android:id="@+id/alignButton"
+                    style="@style/OverlayButton"
+                    android:text="@string/align" />
+            </LinearLayout>
         </LinearLayout>
 
         <!-- Bottom stack: details for the focused / last-locked satellite, then the screen toggle. -->
@@ -77,6 +91,44 @@
             android:gravity="center_horizontal"
             android:orientation="vertical"
             android:padding="16dp">
+
+            <!-- Heading alignment panel, opened by the Align button: Moon or magnetometer. -->
+            <LinearLayout
+                android:id="@+id/alignBanner"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:background="@drawable/bg_panel"
+                android:orientation="vertical"
+                android:padding="12dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/alignText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="#FFFFFF"
+                    android:textSize="14sp" />
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="end"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/alignCompass"
+                        style="@style/OverlayButton"
+                        android:layout_marginEnd="8dp"
+                        android:text="@string/align_compass" />
+
+                    <Button
+                        android:id="@+id/alignMoon"
+                        style="@style/OverlayButton"
+                        android:text="@string/align_moon" />
+                </LinearLayout>
+            </LinearLayout>
 
             <!-- Shown when a locked satellite is in the reticle. -->
             <Button

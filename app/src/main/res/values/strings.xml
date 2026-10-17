@@ -11,4 +11,9 @@
     <string name="analyze_named">Analyze %1$s</string>
     <string name="close">Close</string>
     <string name="analysis_image_description">Photo of the satellite or its constellation</string>
+    <string name="align">Align</string>
+    <string name="align_disturbed">Align (compass off)</string>
+    <string name="align_named">Aligned: %1$s</string>
+    <string name="align_moon">Align with Moon</string>
+    <string name="align_compass">Use magnetometer</string>
 </resources>

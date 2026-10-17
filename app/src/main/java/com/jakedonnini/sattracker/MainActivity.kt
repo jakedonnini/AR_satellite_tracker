@@ -28,9 +28,15 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.jakedonnini.sattracker.ar.Projector
 import com.jakedonnini.sattracker.camera.CameraController
+import com.jakedonnini.sattracker.geometry.AzEl
+import com.jakedonnini.sattracker.geometry.SkyMath
+import com.jakedonnini.sattracker.orbit.AlignTarget
 import com.jakedonnini.sattracker.orbit.NakedEye
 import com.jakedonnini.sattracker.orbit.Visibility
 import com.jakedonnini.sattracker.sensors.AttitudeTracker
+import com.jakedonnini.sattracker.sensors.FieldQuality
+import com.jakedonnini.sattracker.sensors.HeadingFusion
+import com.jakedonnini.sattracker.sensors.HeadingStatus
 import com.jakedonnini.sattracker.ui.AnalysisPanel
 import com.jakedonnini.sattracker.ui.GlobeController
 import com.jakedonnini.sattracker.ui.LoadingState
@@ -53,6 +59,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var infoCard: TextView
     private lateinit var clearButton: Button
     private lateinit var analyzeButton: Button
+    private lateinit var alignButton: Button
+    private lateinit var alignBanner: View
+    private lateinit var alignText: TextView
+    private lateinit var alignMoonButton: Button
+    private lateinit var alignCompassButton: Button
+    /** True while the alignment panel is open. */
+    private var aligning = false
+    /** The Moon's latest position, refreshed by the HUD loop. */
+    private var moon: AlignTarget? = null
     private lateinit var zoomSlider: VerticalSlider
     private lateinit var analysisPanel: AnalysisPanel
     private lateinit var cameraController: CameraController
@@ -139,6 +154,14 @@ class MainActivity : AppCompatActivity() {
         }
         overlay.onSatelliteTapped = viewModel::toggleLock
         clearButton.setOnClickListener { viewModel.clearLocks() }
+        alignButton = findViewById(R.id.alignButton)
+        alignBanner = findViewById(R.id.alignBanner)
+        alignText = findViewById(R.id.alignText)
+        alignMoonButton = findViewById(R.id.alignMoon)
+        alignCompassButton = findViewById(R.id.alignCompass)
+        alignButton.setOnClickListener { toggleAlignPanel() }
+        alignMoonButton.setOnClickListener { alignOnMoon() }
+        alignCompassButton.setOnClickListener { useMagnetometer() }
         hud.setOnClickListener { hudExpanded = !hudExpanded }
         // Debug: long-press the HUD to A/B the raw compass-driven attitude against the fused one.
         hud.setOnLongClickListener {
@@ -147,6 +170,9 @@ class MainActivity : AppCompatActivity() {
             Log.i(TAG, "Attitude mode → ${tracker.mode}")
             true
         }
+
+        // Field diagnostics for heading drift (design doc §6.2); overwritten each launch.
+        viewModel.attitudeTracker.recordDiagnostics(java.io.File(filesDir, "heading_log.csv"))
 
         observeState()
 
@@ -204,6 +230,7 @@ class MainActivity : AppCompatActivity() {
                 overlay.invalidate() // restart the overlay's per-frame redraw loop
             }
             Screen.GLOBE -> {
+                stopAligning()
                 arLayer.visibility = View.GONE
                 cameraController.stop()
                 viewModel.setFocus(null)
@@ -295,6 +322,9 @@ class MainActivity : AppCompatActivity() {
                     var ticks = 0
                     while (true) {
                         hud.text = buildHud()
+                        renderAlignButton()
+                        if (aligning || ticks % MOON_REFRESH_TICKS == 0) refreshMoon()
+                        if (aligning) renderAlignBanner()
                         if (++ticks % 10 == 0) {
                             viewModel.attitudeTracker.attitude.value?.let {
                                 Log.d(TAG, "jitter ${it.mode} ${it.jitterDeg} az ${it.boresight.azimuthDeg} el ${it.boresight.elevationDeg}")
@@ -360,6 +390,113 @@ class MainActivity : AppCompatActivity() {
         infoCard.visibility = View.VISIBLE
     }
 
+    // ---- Moon alignment (design doc §6.2a) ----
+
+    /** The Align button opens or closes the inline panel; there are no dialogs. */
+    private fun toggleAlignPanel() {
+        if (aligning) stopAligning() else startAligning()
+    }
+
+    private fun startAligning() {
+        aligning = true
+        overlay.aligning = true
+        alignBanner.visibility = View.VISIBLE
+        renderAlignBanner()
+    }
+
+    private fun stopAligning() {
+        aligning = false
+        overlay.aligning = false
+        alignBanner.visibility = View.GONE
+    }
+
+    /** Where the Moon is now; the overlay marks it whenever it's above the horizon. */
+    private suspend fun refreshMoon() {
+        moon = viewModel.moon()
+        overlay.moonMarker = moon?.takeIf { it.elevationDeg > 0 }
+            ?.let { SkyMath.toEnu(AzEl(it.azimuthDeg, it.elevationDeg)) }
+    }
+
+    /** Current heading source, then live guidance; "Align with Moon" is enabled only when it would work. */
+    private fun renderAlignBanner() {
+        val m = moon
+        val att = viewModel.attitudeTracker.attitude.value
+        val heading = att?.heading
+        val aligned = heading?.alignedTo != null
+        alignCompassButton.isEnabled = aligned
+        alignCompassButton.alpha = if (aligned) 1f else DISABLED_ALPHA
+        var ready = false
+        alignText.text = buildString {
+            if (aligned) {
+                val mins = heading?.alignedAtMillis?.let { (System.currentTimeMillis() - it) / 60_000 } ?: 0
+                append("Heading: aligned on the Moon $mins min ago")
+                if (heading?.alignmentApproximate == true) append(" (approximate, re-align)")
+            } else {
+                append("Heading: magnetometer")
+                if (heading?.field == FieldQuality.DISTURBED) append(" (disturbed nearby)")
+            }
+            append("\n")
+            when {
+                m == null || att == null -> append("Waiting for GPS and orbit data.")
+                m.elevationDeg < 0 -> append("The Moon is below the horizon right now.")
+                m.elevationDeg < MOON_MIN_ELEVATION_DEG ->
+                    append("The Moon is too low (%.0f° up). Wait until it's above %.0f°.".format(m.elevationDeg, MOON_MIN_ELEVATION_DEG))
+                else -> {
+                    val dAz = wrapDeg(m.azimuthDeg - att.boresight.azimuthDeg)
+                    val dEl = m.elevationDeg - att.boresight.elevationDeg
+                    // Elevation comes from gravity and is trustworthy, so it tells whether the Moon is centred.
+                    ready = Math.abs(dEl) <= MAX_CENTERING_ERROR_DEG
+                    append("Center the Moon in the circle, then tap Align with Moon.")
+                    append("\nOff by az %+.1f°  el %+.1f°".format(dAz, dEl))
+                    if (!ready) append("\nNot centered yet: tilt %s.".format(if (dEl > 0) "up" else "down"))
+                    if (m.elevationDeg > MOON_HIGH_ELEVATION_DEG) append("\nThe Moon is high, so the alignment is less precise.")
+                }
+            }
+        }
+        alignMoonButton.isEnabled = ready
+        alignMoonButton.alpha = if (ready) 1f else DISABLED_ALPHA
+    }
+
+    private fun alignOnMoon() {
+        val m = moon ?: return
+        val att = viewModel.attitudeTracker.attitude.value ?: return
+        viewModel.attitudeTracker.align("Moon", wrapDeg(m.azimuthDeg - att.boresight.azimuthDeg))
+        stopAligning()
+    }
+
+    private fun useMagnetometer() {
+        viewModel.attitudeTracker.clearAlignment()
+        stopAligning()
+    }
+
+    private fun renderAlignButton() {
+        val heading = viewModel.attitudeTracker.attitude.value?.heading
+        alignButton.text = when {
+            heading?.alignedTo != null -> getString(R.string.align_named, heading.alignedTo)
+            heading?.field == FieldQuality.DISTURBED -> getString(R.string.align_disturbed)
+            else -> getString(R.string.align)
+        }
+    }
+
+    private fun headingLine(h: HeadingStatus): String {
+        val field = when (h.field) {
+            FieldQuality.CLEAN -> "clean"
+            FieldQuality.DISTURBED -> "DISTURBED"
+            FieldQuality.UNKNOWN -> "unchecked"
+        }
+        val dev = if (h.fieldStrengthDeviationPct.isNaN()) "" else
+            " (%+.0f%%, dip %+.1f°)".format(h.fieldStrengthDeviationPct, h.dipDeviationDeg)
+        val source = when {
+            h.alignedTo != null -> {
+                val mins = h.alignedAtMillis?.let { (System.currentTimeMillis() - it) / 60_000 } ?: 0
+                "aligned on ${h.alignedTo} ${mins}m ago" + if (h.alignmentApproximate) ", re-align" else ""
+            }
+            h.state == HeadingFusion.State.HELD -> "gyro hold (compass ignored)"
+            else -> "compass"
+        }
+        return "HEADING $source\n        field $field$dev"
+    }
+
     private fun buildHud(): String = buildString {
         val loc = viewModel.locationTracker.location.value
         val att = viewModel.attitudeTracker.attitude.value
@@ -387,7 +524,7 @@ class MainActivity : AppCompatActivity() {
                     att.mode,
                     att.jitterDeg?.let { "%.3f°".format(it) } ?: "…",
                 )
-            )
+            ).also { appendLine(headingLine(att.heading)) }
         }
         snapshot?.let {
             appendLine("SUN     el %+.1f°  %s".format(it.sunElevationDeg, Visibility.skyCondition(it.sunElevationDeg).label))
@@ -410,6 +547,8 @@ class MainActivity : AppCompatActivity() {
         else -> "UNRELIABLE – calibrate"
     }
 
+    private fun wrapDeg(d: Double) = ((d + 540.0) % 360.0) - 180.0
+
     private fun hasPermission(permission: String) =
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
@@ -422,6 +561,14 @@ class MainActivity : AppCompatActivity() {
         const val HUD_REFRESH_MS = 200L
         const val GLOBE_POSE_MS = 100L
         const val MAX_ZOOM = 8.0
+        /** Below this the Moon is in haze and refraction; above the high mark azimuth gets touchy. */
+        const val MOON_MIN_ELEVATION_DEG = 5.0
+        const val MOON_HIGH_ELEVATION_DEG = 70.0
+        /** The Moon must be this close in elevation (trusted) before alignment is allowed. */
+        const val MAX_CENTERING_ERROR_DEG = 3.0
+        /** Moon position refresh outside alignment, in HUD ticks (2 s). */
+        const val MOON_REFRESH_TICKS = 10
+        const val DISABLED_ALPHA = 0.4f
         /** Used until the camera's real FOV is known. */
         const val DEFAULT_LONG_FOV_DEG = 70.0
     }

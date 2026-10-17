@@ -59,7 +59,7 @@ class HeadingFusionTest {
         val abs = pose(az = 250.0, el = 25.0)     // compass says 250°
         var t = 0L
         repeat(500) { // 10 s at 50 Hz
-            fusion.onAbsolute(abs, game, t)
+            fusion.onAbsolute(abs, game, t, FieldQuality.CLEAN)
             t += 20_000_000L
         }
         val fused = SkyMath.toAzEl(SkyMath.cameraBoresight(fusion.fuse(game)!!))
@@ -80,7 +80,7 @@ class HeadingFusionTest {
         repeat(50 * 60) { i -> // 60 s at 50 Hz
             val noisyAz = trueAz + rnd.nextGaussian() * noiseStdDeg
             val abs = pose(noisyAz, 30.0)
-            fusion.onAbsolute(abs, game, t)
+            fusion.onAbsolute(abs, game, t, FieldQuality.CLEAN)
             t += 20_000_000L
             if (i > 50 * 20) { // after settling
                 raw += angleDiff(boresightAz(abs), trueAz)
@@ -98,9 +98,9 @@ class HeadingFusionTest {
         val fusion = HeadingFusion()
         val game = pose(0.0, 30.0)
         var t = 0L
-        repeat(500) { fusion.onAbsolute(pose(60.0, 30.0), game, t); t += 20_000_000L }
+        repeat(500) { fusion.onAbsolute(pose(60.0, 30.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
         // 2 s next to a fridge: compass swings 40°.
-        repeat(100) { fusion.onAbsolute(pose(100.0, 30.0), game, t); t += 20_000_000L }
+        repeat(100) { fusion.onAbsolute(pose(100.0, 30.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
         val az = boresightAz(fusion.fuse(game)!!)
         assertTrue("estimate moved to $az", angleDiff(az, 60.0) < 2.0)
     }
@@ -110,9 +110,9 @@ class HeadingFusionTest {
         val fusion = HeadingFusion()
         val game = pose(0.0, 30.0)
         var t = 0L
-        repeat(500) { fusion.onAbsolute(pose(60.0, 30.0), game, t); t += 20_000_000L }
+        repeat(500) { fusion.onAbsolute(pose(60.0, 30.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
         // Game frame got reset (or user walked somewhere the field really differs) for 8 s.
-        repeat(400) { fusion.onAbsolute(pose(100.0, 30.0), game, t); t += 20_000_000L }
+        repeat(400) { fusion.onAbsolute(pose(100.0, 30.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
         assertEquals(100.0, boresightAz(fusion.fuse(game)!!), 0.5)
     }
 
@@ -123,9 +123,79 @@ class HeadingFusionTest {
         var t = 0L
         repeat(500) { i ->
             // Compass alternates 358° / 2°: mean is 0°, not 180°.
-            fusion.onAbsolute(pose(if (i % 2 == 0) 358.0 else 2.0, 10.0), game, t)
+            fusion.onAbsolute(pose(if (i % 2 == 0) 358.0 else 2.0, 10.0), game, t, FieldQuality.CLEAN)
             t += 20_000_000L
         }
         assertTrue(angleDiff(boresightAz(fusion.fuse(game)!!), 0.0) < 0.5)
+    }
+
+    @Test
+    fun `disturbed compass is ignored and heading is held on the gyro`() {
+        val fusion = HeadingFusion()
+        val game = pose(0.0, 5.0)
+        var t = 0L
+        repeat(500) { fusion.onAbsolute(pose(213.0, 5.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
+        // Field goes bad and the compass wanders 3° right for a minute (as measured on device).
+        repeat(3000) { i ->
+            fusion.onAbsolute(pose(213.0 + 3.0 * i / 3000, 5.0), game, t, FieldQuality.DISTURBED)
+            t += 20_000_000L
+        }
+        assertEquals(HeadingFusion.State.HELD, fusion.state)
+        assertEquals(213.0, boresightAz(fusion.fuse(game)!!), 0.01)
+    }
+
+    @Test
+    fun `clean compass is averaged, then followed slowly, and re-seeded after recovery`() {
+        val fusion = HeadingFusion()
+        val game = pose(0.0, 5.0)
+        var t = 0L
+        // Early on the estimate is a running mean: 10 s at 200° then 10 s at 202° → about 201°.
+        repeat(500) { fusion.onAbsolute(pose(200.0, 5.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
+        repeat(500) { fusion.onAbsolute(pose(202.0, 5.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
+        assertEquals(201.0, boresightAz(fusion.fuse(game)!!), 0.2)
+        // Once settled (well past the 120 s time constant), a 2° move is only followed slowly.
+        repeat(50 * 300) { fusion.onAbsolute(pose(200.0, 5.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
+        repeat(500) { fusion.onAbsolute(pose(202.0, 5.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
+        val slow = boresightAz(fusion.fuse(game)!!)
+        assertTrue("slow follow: $slow", slow in 200.05..200.4)
+        // Disturbed, then clean again at 210°: the recovery window re-converges within seconds.
+        repeat(100) { fusion.onAbsolute(pose(250.0, 5.0), game, t, FieldQuality.DISTURBED); t += 20_000_000L }
+        repeat(300) { fusion.onAbsolute(pose(210.0, 5.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
+        assertEquals(210.0, boresightAz(fusion.fuse(game)!!), 0.5)
+    }
+
+    @Test
+    fun `sky alignment corrects heading and then ignores the compass`() {
+        val fusion = HeadingFusion()
+        val game = pose(0.0, 40.0)
+        var t = 0L
+        repeat(500) { fusion.onAbsolute(pose(100.0, 40.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
+        assertEquals(100.0, boresightAz(fusion.fuse(game)!!), 0.05)
+        // The star the user centred is really at 104.5°: heading is 4.5° short.
+        fusion.align(4.5)
+        assertTrue(fusion.isAligned)
+        assertEquals(104.5, boresightAz(fusion.fuse(game)!!), 1e-4)
+        // Compass keeps saying 100° (clean or not): alignment stands.
+        repeat(3000) { fusion.onAbsolute(pose(100.0, 40.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
+        assertEquals(HeadingFusion.State.ALIGNED, fusion.state)
+        assertEquals(104.5, boresightAz(fusion.fuse(game)!!), 1e-4)
+        // Clearing hands control back to the compass.
+        fusion.clearAlignment(t)
+        repeat(300) { fusion.onAbsolute(pose(100.0, 40.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
+        assertEquals(100.0, boresightAz(fusion.fuse(game)!!), 0.1)
+    }
+
+    @Test
+    fun `alignment survives a gyro frame restart as a compass correction`() {
+        val fusion = HeadingFusion()
+        var t = 0L
+        repeat(200) { fusion.onAbsolute(pose(100.0, 40.0), pose(0.0, 40.0), t, FieldQuality.CLEAN); t += 20_000_000L }
+        fusion.align(4.5)
+        // Sensors restart and the gyro frame comes back with a different yaw reference (30° off).
+        fusion.onFrameRestart()
+        val newGame = pose(30.0, 40.0)
+        fusion.onAbsolute(pose(100.0, 40.0), newGame, t, FieldQuality.CLEAN)
+        assertEquals(104.5, boresightAz(fusion.fuse(newGame)!!), 1e-3)
+        assertTrue(fusion.isAligned)
     }
 }
