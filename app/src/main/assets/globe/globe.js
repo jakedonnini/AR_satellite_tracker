@@ -517,6 +517,12 @@
           }
         }
       }
+      // Only the in-view / out-of-view layers decide whether a satellite is drawn.
+      const shown = tier === TIER.dim ? layers.outOfView : layers.inView;
+      if (!shown) {
+        sizes[i] = 0;
+        continue;
+      }
       if (sun && layers.visibility) {
         const along = x * sun[0] + y * sun[1] + z * sun[2];
         const r2 = x * x + y * y + z * z;
@@ -525,14 +531,13 @@
         const r = Math.sqrt(r2);
         const sinSunElev = along / r;
         if (sunlit && sinSunElev < -SIN_6) {
-          // Likely visible: always shown, whatever the other layers, with a brightness gradient.
+          // Likely visible: the "likely visible" layer only recolours, with a brightness gradient.
           setGradient(i, inView ? ORANGE : GREEN, visibilityScore(i, r, sinSunElev));
           continue;
         }
       }
-      const shown = tier === TIER.dim ? layers.outOfView : layers.inView;
       colors.set(tier.c, i * 4);
-      sizes[i] = shown ? tier.s : 0;
+      sizes[i] = tier.s;
     }
     satGeom.attributes.position.needsUpdate = true;
     satGeom.attributes.aColor.needsUpdate = true;

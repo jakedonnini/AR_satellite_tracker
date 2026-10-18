@@ -9,6 +9,11 @@ import com.jakedonnini.sattracker.SatTrackerApp
 import com.jakedonnini.sattracker.data.SatelliteInfo
 import com.jakedonnini.sattracker.data.SatelliteInfoRepository
 import com.jakedonnini.sattracker.ar.OverlayGeometry
+import com.jakedonnini.sattracker.air.AirGeometry
+import com.jakedonnini.sattracker.air.AirTraffic
+import com.jakedonnini.sattracker.air.FlightInfoRepository
+import com.jakedonnini.sattracker.air.SkyAircraft
+import com.jakedonnini.sattracker.data.remote.OpenSkyClient
 import com.jakedonnini.sattracker.orbit.AlignTarget
 import com.jakedonnini.sattracker.orbit.Observer
 import com.jakedonnini.sattracker.orbit.OrekitInitializer
@@ -24,7 +29,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.isActive
@@ -35,6 +43,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -117,6 +126,23 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
     /** Non-null while the Analyze panel is open. */
     val analysis: StateFlow<AnalysisState?> = _analysis.asStateFlow()
 
+    private val openSky = OpenSkyClient()
+    private val flightInfo = FlightInfoRepository()
+    private var infoJob: Job? = null
+    private val _air = MutableStateFlow<AirTraffic?>(null)
+    /** Aircraft within [AIR_RADIUS_KM], from the last successful poll; null if none or too old. */
+    val air: StateFlow<AirTraffic?> = _air.asStateFlow()
+
+    /** Why there's no fresh aircraft data, for the HUD (null when all is well). */
+    @Volatile var airProblem: String? = null
+        private set
+
+    private val focusedAircraftId = MutableStateFlow<String?>(null)
+    /** The aircraft in the reticle, kept current with each poll. */
+    val focusedAircraft: StateFlow<SkyAircraft?> = combine(focusedAircraftId, _air) { id, air ->
+        id?.let { air?.aircraft?.firstOrNull { it.aircraft.icao24 == id } }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
     @Volatile private var active = false
     private var focusJob: Job? = null
     private val lockJobs = HashMap<Int, Job>()
@@ -162,6 +188,47 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
                     } }
                 }
                 delay(SNAPSHOT_INTERVAL_MS)
+            }
+        }
+
+        // Aircraft near the user, while the AR view is open (design doc §13a).
+        viewModelScope.launch {
+            var nextPollMillis = 0L
+            while (isActive) {
+                val now = System.currentTimeMillis()
+                val observer = observer()
+                if (active && _screen.value == Screen.AR && observer != null && now >= nextPollMillis) {
+                    nextPollMillis = now + AIR_POLL_MS
+                    try {
+                        val result = openSky.aircraftNear(observer.latDeg, observer.lonDeg, AIR_RADIUS_KM)
+                        val nearby = result.aircraft.filter {
+                            AirGeometry.toSky(it, observer).groundDistanceKm <= AIR_RADIUS_KM
+                        }
+                        fun publish() {
+                            _air.value = AirTraffic(now, nearby.map { AirGeometry.toSky(it, observer, flightInfo) }, result.creditsRemaining)
+                        }
+                        publish()
+                        airProblem = null
+                        // Routes and airframe details arrive separately; redraw labels when they do.
+                        if (infoJob?.isActive != true) {
+                            infoJob = launch {
+                                if (flightInfo.fetchMissing(nearby) && _air.value?.fetchedAtMillis == now) publish()
+                            }
+                        }
+                    } catch (e: OpenSkyClient.RateLimited) {
+                        nextPollMillis = now + e.retryAfterSeconds * 1000
+                        airProblem = "rate limited, retry in %d min".format((e.retryAfterSeconds + 59) / 60)
+                    } catch (e: IOException) {
+                        airProblem = "offline (${e.message})"
+                    } catch (e: RuntimeException) {
+                        // Malformed response: show nothing rather than guess.
+                        Log.w(TAG, "Bad OpenSky response", e)
+                        airProblem = "bad response"
+                    }
+                }
+                // Positions older than this are dead-reckoned too far to trust: drop them.
+                _air.value?.let { if (now - it.fetchedAtMillis > AIR_STALE_MS) _air.value = null }
+                delay(AIR_TICK_MS)
             }
         }
 
@@ -217,6 +284,11 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
     fun setActive(isActive: Boolean) {
         active = isActive
         if (isActive) attitudeTracker.start() else attitudeTracker.stop()
+    }
+
+    /** Called by the overlay when the reticle picks up or loses an aircraft. */
+    fun setAircraftFocus(icao24: String?) {
+        focusedAircraftId.value = icao24
     }
 
     /** Called by the overlay when the reticle picks up or loses a satellite. */
@@ -315,11 +387,11 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
     /** Built on first use, after Orekit's data is loaded (it reads the planetary ephemeris). */
     private val skyTargets by lazy { SkyTargets() }
 
-    /** The Moon's position right now, or null until GPS and orbit data are ready. */
-    suspend fun moon(): AlignTarget? {
+    /** Where [name] (e.g. "Sun", "Moon") is right now, or null until GPS and orbit data are ready. */
+    suspend fun skyBody(name: String): AlignTarget? {
         val observer = observer() ?: return null
         if (_skyModel.value == null) return null
-        return withContext(Dispatchers.Default) { skyTargets.position("Moon", observer, System.currentTimeMillis()) }
+        return withContext(Dispatchers.Default) { skyTargets.position(name, observer, System.currentTimeMillis()) }
     }
 
     private fun observer(): Observer? =
@@ -364,6 +436,12 @@ class SkyViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val TAG = "SkyViewModel"
         const val SNAPSHOT_INTERVAL_MS = 2000L
+        /** Aircraft are fetched within this ground distance; an airliner at 11 km is ~12° up at the edge. */
+        const val AIR_RADIUS_KM = 50.0
+        /** OpenSky's anonymous time resolution; faster polling only burns the daily credits. */
+        const val AIR_POLL_MS = 10_000L
+        const val AIR_STALE_MS = 45_000L
+        const val AIR_TICK_MS = 1000L
         /** Slightly below the horizon so rising satellites are ready when they clear it. */
         const val SNAPSHOT_MIN_ELEVATION_DEG = -2.0
         /**

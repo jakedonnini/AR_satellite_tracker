@@ -102,7 +102,6 @@ class AttitudeTracker(private val sensorManager: SensorManager) : SensorEventLis
 
     @Volatile private var alignedTo: String? = null
     @Volatile private var alignedAtMillis: Long? = null
-    @Volatile private var alignmentApproximate = false
     private var started = false
 
     private var recorder: HeadingRecorder? = null
@@ -119,10 +118,7 @@ class AttitudeTracker(private val sensorManager: SensorManager) : SensorEventLis
             return
         }
         // Re-registering may restart the gyro frame with a new yaw reference.
-        if (started) {
-            fusion.onFrameRestart()
-            if (alignedTo != null) alignmentApproximate = true
-        }
+        if (started) fusion.onFrameRestart()
         started = true
         sensorManager.registerListener(this, absolute, SensorManager.SENSOR_DELAY_GAME)
         gameSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
@@ -153,14 +149,12 @@ class AttitudeTracker(private val sensorManager: SensorManager) : SensorEventLis
         fusion.align(azimuthErrorDeg)
         alignedTo = targetName
         alignedAtMillis = System.currentTimeMillis()
-        alignmentApproximate = false
     }
 
     fun clearAlignment() {
         fusion.clearAlignment(SystemClock.elapsedRealtimeNanos())
         alignedTo = null
         alignedAtMillis = null
-        alignmentApproximate = false
     }
 
     override fun onSensorChanged(event: SensorEvent) {
@@ -197,7 +191,7 @@ class AttitudeTracker(private val sensorManager: SensorManager) : SensorEventLis
         dipDeviationDeg = fieldDipDeg - expectedDipDeg,
         alignedTo = alignedTo,
         alignedAtMillis = alignedAtMillis,
-        alignmentApproximate = alignmentApproximate,
+        alignmentApproximate = fusion.alignmentApproximate,
     )
 
     private fun publish(r: FloatArray) {

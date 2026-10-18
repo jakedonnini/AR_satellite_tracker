@@ -25,6 +25,19 @@ object Geodesy {
         )
     }
 
+    /** Rotates an ECEF vector (dx, dy, dz) into local East-North-Up axes at (lat, lon) (same units). */
+    fun ecefToEnu(dx: Double, dy: Double, dz: Double, latDeg: Double, lonDeg: Double): Enu {
+        val lat = Math.toRadians(latDeg)
+        val lon = Math.toRadians(lonDeg)
+        val sLat = sin(lat); val cLat = cos(lat)
+        val sLon = sin(lon); val cLon = cos(lon)
+        return Enu(
+            -sLon * dx + cLon * dy,
+            -sLat * cLon * dx - sLat * sLon * dy + cLat * dz,
+            cLat * cLon * dx + cLat * sLon * dy + sLat * dz,
+        )
+    }
+
     /** Rotates a local East-North-Up vector at (lat, lon) into ECEF axes (same units). */
     fun enuToEcef(v: Enu, latDeg: Double, lonDeg: Double): Ecef {
         val lat = Math.toRadians(latDeg)
