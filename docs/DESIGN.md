@@ -206,20 +206,20 @@ The last one is the decisive interference test: the Earth's field is fixed for a
   - **Disturbed compass:** ψ is held, so only the gyro moves the heading.
   - **Compass clean again:** the filter re-seeds from it.
   - **Aligned:** the compass is ignored entirely.
-  - A gyro frame restart (sensors re-registered) re-applies the alignment relative to the compass. It is marked approximate and the HUD asks for a re-align.
+  - **App resumed (sensors re-registered):** the gyro frame may or may not have been reset. If the compass now agrees with the held offset within 20°, the frame is taken as kept, and the held or aligned heading stays. Before this, a single compass reading re-seeded the heading in a disturbed field, which pushed the planes off screen after the app was reopened (field test 2026-10-18). A bigger jump means the frame was reset. The heading is then re-seeded from the compass, any alignment is re-applied relative to it, and the alignment is marked approximate. A clean, unaligned compass always re-seeds.
   - **Change from step 3:** the alignment does not decay back to the compass. It stays until the user clears it, because the gyro held yaw within 0.04° over four minutes in the measured test.
 - `orbit/SkyTargets.kt` lists Align targets between 10° and 75° elevation:
   - Moon, Sun and planets come from Orekit DE-440.
   - The 41 stars brighter than V 1.9 plus Polaris use SIMBAD J2000 positions, run through Orekit's frames so precession is included.
   - Above 75° the azimuth is too sensitive to pointing error to be useful.
-  - The UI uses only the Moon for now (after field testing, a short list of stars and planets was more confusing than useful). The other targets stay in `SkyTargets` for automatic alignment (D).
-- The AR screen has an **Align** button. It reads "Align (compass off)" while the field is disturbed and "Aligned: Moon" once aligned. It opens an inline panel with no dialogs, toasts or confirmations:
-  - **Text:** the current heading source, then live guidance and the az/el error to the Moon.
-  - **Two buttons:** "Align with Moon" applies Δaz = Moon − boresight. "Use magnetometer" clears the alignment.
-  - **Guard instead of a confirmation popup:** "Align with Moon" is enabled only when the Moon is at least 5° up and centred within 3° in elevation. Elevation comes from gravity and can be trusted.
+  - The UI uses only the Sun and Moon (after field testing, a short list of stars and planets was more confusing than useful). The Sun was added for daytime use. The other targets stay in `SkyTargets` for automatic alignment (D).
+- The AR screen has an **Align** button. It reads "Align (compass off)" while the field is disturbed and "Aligned: Sun/Moon" once aligned. It opens an inline panel with no dialogs, toasts or confirmations:
+  - **Text:** the current heading source, then live guidance and the az/el error to whichever of the Sun and Moon is nearer the camera. For the Sun it adds a reminder to aim using the screen, not by looking at it.
+  - **Two buttons:** "Align with Sun" or "Align with Moon" (whichever is nearer) applies Δaz = body − boresight. "Use magnetometer" clears the alignment.
+  - **Guard instead of a confirmation popup:** the align button is enabled only when the body is at least 5° up and centred within 3° in elevation. Elevation comes from gravity and can be trusted.
   - Tapping Align again, or either button, closes the panel.
-- **Moon marker:** a blue diamond sits where the current heading puts the Moon, whenever it's above the horizon. It's dim and unlabelled in normal use. While aligning it's bright, labelled, and an edge arrow points to it when off screen.
-- **HUD:** a HEADING line shows the source (compass, gyro hold, or aligned on the Moon), the field verdict and its deviation from the model.
+- **Sun and Moon markers:** a blue diamond sits where the current heading puts each, whenever it's above the horizon. The gap to the real Sun or Moon in the camera shows the heading error. They're dim and unlabelled in normal use. While aligning they're bright, labelled, and an edge arrow points to them when off screen.
+- **HUD:** a HEADING line shows the source (compass, gyro hold, or aligned on the Sun/Moon), the field verdict and its deviation from the model.
 
 ### 6.3 Projection to screen
 For each satellite ENU vector `s` (rotated into the magnetic world frame), convert to device coordinates: `d = Rᵀ s`.
@@ -517,6 +517,61 @@ Checked live: Sentinel-2A, NOAA-19, Landsat 9, Aqua and Terra get their own arti
 SatNOGS transmitter (radio frequency) data was left out: that endpoint was timing out when checked.
 
 **Next step, if wanted:** a static **GCAT index** for physical specs (mass, dimensions, manufacturer) on every object, if a tiny hosted file is acceptable.
+
+## 13a. Aircraft overlay (2026-10-17)
+
+A moving light overhead is far more often a plane than a satellite. The AR view shows live aircraft near the user so the two can be told apart.
+
+**Source:** The OpenSky Network REST API (`/api/states/all` with a bounding box), using anonymous access. Other options checked the same day:
+
+| Source | Result |
+|---|---|
+| OpenSky | Works without a key. 400 credits a day per IP; a box under 25 sq deg costs 1 credit. 10 s time resolution. |
+| airplanes.live | HTTP 403: asks projects to email them first. |
+| adsb.lol | Timed out. |
+
+**Budget:** polling every 10 s, only while the AR screen is open, gives about 66 minutes of AR use a day. A free OpenSky account would raise that to 4000 credits and 5 s resolution, if that's ever needed. HTTP 429 is honoured using its retry-after header.
+
+**Correct data over any data:**
+- Aircraft that are on the ground, have no position, or have a position more than 30 s old are dropped.
+- Geometric (GNSS) altitude is used when sent, otherwise barometric altitude.
+- A missing speed or track means no extrapolation.
+- Positions are dead-reckoned from their report time, capped at 60 s.
+- The whole set is dropped 45 s after the last successful poll.
+
+**Radius:** 50 km ground distance. An airliner at 11 km altitude sits about 12° up at the edge, which overlaps where low satellites appear.
+
+**Geometry:** WGS-84 geodetic → ECEF → East-North-Up at the observer (`Geodesy.ecefToEnu`), in km like satellites. Velocity comes from ground speed, track and vertical rate (`air/Aircraft.kt`).
+
+**AR view:**
+- **Marker:** each aircraft is a red plane silhouette pointing its on-screen direction of travel. Its label is the callsign, the destination when the route is confirmed (e.g. `THY8BR → IST`), and altitude in km. There are no edge arrows, to keep the screen clear.
+- **Per-frame loop:** allocation-free, like the satellite dots. The canvas is rotated rather than a new path built.
+- **Reticle:** the aircraft nearest the centre inside the reticle gets a ring.
+- **Info card:** shows "Aircraft, not a satellite" with:
+  - callsign, ICAO address and country;
+  - airline, aircraft type and registration;
+  - From / To airports when the route is confirmed, otherwise "Route unknown";
+  - altitude in ft and km, speed in kt, heading, range and elevation, and climb rate;
+  - "Satellite X is also in the circle" when one is;
+  - the position's age and OpenSky attribution.
+
+  It takes priority over an unlocked satellite in the reticle; a locked satellite still wins.
+- **HUD:** an AIR line shows the count, the poll age, the credits left, or the problem (rate limited, offline).
+
+**Route and aircraft details** come from adsbdb (open source, no key), cached for the session:
+- `/v0/callsign/{cs}` gives the airline and a scheduled origin/destination.
+- `/v0/aircraft/{icao24}` gives the type, registration and owner from the registry.
+
+The airline comes from the callsign prefix and the airframe from the transponder address, so both can be trusted. Routes can't: they're matched on callsign only. On 2026-10-18 adsbdb listed DAL2412 as LAX→SFO and hexdb listed it as JFK→ATL (a 2019 record), while it was over Philadelphia.
+
+So `air/RouteCheck.kt` shows a route only if the aircraft is plausibly flying it:
+- within 150 km of either airport (departures and approaches can point anywhere); or
+- all of these:
+  - near the great circle between the airports (cross-track ≤ max(100 km, 15% of the route));
+  - between the airports along it;
+  - heading within 90° of the destination.
+
+Otherwise the card says "Route unknown". A failed lookup is retried after 60 s, and "not in the database" is cached.
 
 ## 14. Milestones
 

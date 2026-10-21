@@ -2,7 +2,8 @@
 <resources>
     <style name="Theme.SatTracker" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="colorPrimary">@color/purple_500</item>
-        <item name="colorPrimaryDark">@color/purple_700</item>
+        <item name="colorPrimaryDark">@color/black</item>
+        <item name="android:statusBarColor">@color/black</item>
         <item name="colorAccent">@color/teal_200</item>
     </style>
 

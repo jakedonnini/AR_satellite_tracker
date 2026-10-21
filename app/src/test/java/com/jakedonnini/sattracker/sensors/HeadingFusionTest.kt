@@ -186,16 +186,44 @@ class HeadingFusionTest {
     }
 
     @Test
-    fun `alignment survives a gyro frame restart as a compass correction`() {
+    fun `alignment survives a gyro frame reset as a compass correction`() {
         val fusion = HeadingFusion()
         var t = 0L
         repeat(200) { fusion.onAbsolute(pose(100.0, 40.0), pose(0.0, 40.0), t, FieldQuality.CLEAN); t += 20_000_000L }
         fusion.align(4.5)
-        // Sensors restart and the gyro frame comes back with a different yaw reference (30° off).
+        // Sensors restart and the gyro frame comes back with a different yaw reference (60° off).
         fusion.onFrameRestart()
-        val newGame = pose(30.0, 40.0)
+        val newGame = pose(60.0, 40.0)
         fusion.onAbsolute(pose(100.0, 40.0), newGame, t, FieldQuality.CLEAN)
         assertEquals(104.5, boresightAz(fusion.fuse(newGame)!!), 1e-3)
         assertTrue(fusion.isAligned)
+        assertTrue(fusion.alignmentApproximate)
+    }
+
+    @Test
+    fun `alignment is kept exactly when the gyro frame survives a restart`() {
+        val fusion = HeadingFusion()
+        var t = 0L
+        val game = pose(0.0, 40.0)
+        repeat(200) { fusion.onAbsolute(pose(100.0, 40.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
+        fusion.align(4.5)
+        fusion.onFrameRestart()
+        // Same gyro frame; the compass has wandered 12° meanwhile.
+        fusion.onAbsolute(pose(112.0, 40.0), game, t, FieldQuality.DISTURBED)
+        assertEquals(104.5, boresightAz(fusion.fuse(game)!!), 1e-3)
+        assertTrue(!fusion.alignmentApproximate)
+    }
+
+    @Test
+    fun `held heading is kept across a restart in a disturbed field`() {
+        val fusion = HeadingFusion()
+        var t = 0L
+        val game = pose(0.0, 40.0)
+        repeat(300) { fusion.onAbsolute(pose(100.0, 40.0), game, t, FieldQuality.CLEAN); t += 20_000_000L }
+        fusion.onFrameRestart()
+        // Back in the app next to a wall: the compass reads 15° off, flagged disturbed.
+        repeat(100) { fusion.onAbsolute(pose(115.0, 40.0), game, t, FieldQuality.DISTURBED); t += 20_000_000L }
+        assertEquals(100.0, boresightAz(fusion.fuse(game)!!), 0.05)
+        assertEquals(HeadingFusion.State.HELD, fusion.state)
     }
 }

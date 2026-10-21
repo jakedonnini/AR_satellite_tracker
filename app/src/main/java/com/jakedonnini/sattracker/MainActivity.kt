@@ -28,12 +28,15 @@ import androidx.core.view.isVisible
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.jakedonnini.sattracker.air.SkyAircraft
+import com.jakedonnini.sattracker.data.remote.Airport
 import com.jakedonnini.sattracker.ar.Projector
 import com.jakedonnini.sattracker.camera.CameraController
 import com.jakedonnini.sattracker.geometry.AzEl
 import com.jakedonnini.sattracker.geometry.SkyMath
 import com.jakedonnini.sattracker.orbit.AlignTarget
 import com.jakedonnini.sattracker.orbit.NakedEye
+import com.jakedonnini.sattracker.orbit.TargetKind
 import com.jakedonnini.sattracker.orbit.Visibility
 import com.jakedonnini.sattracker.sensors.AttitudeTracker
 import com.jakedonnini.sattracker.sensors.FieldQuality
@@ -64,12 +67,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var alignButton: Button
     private lateinit var alignBanner: View
     private lateinit var alignText: TextView
-    private lateinit var alignMoonButton: Button
+    private lateinit var alignBodyButton: Button
     private lateinit var alignCompassButton: Button
     /** True while the alignment panel is open. */
     private var aligning = false
-    /** The Moon's latest position, refreshed by the HUD loop. */
+    /** The Sun's and Moon's latest positions, refreshed by the HUD loop. */
+    private var sun: AlignTarget? = null
     private var moon: AlignTarget? = null
+    /** The body the alignment panel is guiding to (nearest the camera). */
+    private var alignTarget: AlignTarget? = null
     private lateinit var zoomSlider: VerticalSlider
     private lateinit var analysisPanel: AnalysisPanel
     private lateinit var cameraController: CameraController
@@ -161,10 +167,12 @@ class MainActivity : AppCompatActivity() {
                     fov = cameraController.fov.value,
                     focus = viewModel.focus.value,
                     locked = viewModel.locked.value,
+                    air = viewModel.air.value,
                 )
             }
         }
         overlay.onFocusChanged = viewModel::setFocus
+        overlay.onAircraftFocusChanged = viewModel::setAircraftFocus
         overlay.magnifier = cameraController.magnifier
         zoomSlider = findViewById(R.id.zoomSlider)
         zoomSlider.topLabel = "%.0fx".format(MAX_ZOOM)
@@ -180,10 +188,10 @@ class MainActivity : AppCompatActivity() {
         alignButton = findViewById(R.id.alignButton)
         alignBanner = findViewById(R.id.alignBanner)
         alignText = findViewById(R.id.alignText)
-        alignMoonButton = findViewById(R.id.alignMoon)
+        alignBodyButton = findViewById(R.id.alignBody)
         alignCompassButton = findViewById(R.id.alignCompass)
         alignButton.setOnClickListener { toggleAlignPanel() }
-        alignMoonButton.setOnClickListener { alignOnMoon() }
+        alignBodyButton.setOnClickListener { alignOnBody() }
         alignCompassButton.setOnClickListener { useMagnetometer() }
         hud.setOnClickListener { hudExpanded = !hudExpanded }
         // Debug: long-press the HUD to A/B the raw compass-driven attitude against the fused one.
@@ -322,8 +330,9 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
-                    combine(viewModel.focus, viewModel.locked) { focus, locked -> focus to locked }
-                        .collect { (focus, locked) -> renderSelection(focus, locked) }
+                    combine(viewModel.focus, viewModel.locked, viewModel.focusedAircraft) { focus, locked, aircraft ->
+                        Triple(focus, locked, aircraft)
+                    }.collect { (focus, locked, aircraft) -> renderSelection(focus, locked, aircraft) }
                 }
                 launch { viewModel.screen.collect(::applyScreen) }
                 launch {
@@ -349,7 +358,7 @@ class MainActivity : AppCompatActivity() {
                     while (true) {
                         hud.text = buildHud()
                         renderAlignButton()
-                        if (aligning || ticks % MOON_REFRESH_TICKS == 0) refreshMoon()
+                        if (aligning || ticks % BODY_REFRESH_TICKS == 0) refreshBodies()
                         if (aligning) renderAlignBanner()
                         if (++ticks % 10 == 0) {
                             viewModel.attitudeTracker.attitude.value?.let {
@@ -367,13 +376,20 @@ class MainActivity : AppCompatActivity() {
      * The info card shows the focused satellite, or the most recently locked one when nothing
      * is under the reticle. The clear button shows whenever anything is locked.
      */
-    private fun renderSelection(focus: TrackedSatellite?, locked: List<TrackedSatellite>) {
+    private fun renderSelection(focus: TrackedSatellite?, locked: List<TrackedSatellite>, aircraft: SkyAircraft?) {
         clearButton.visibility = if (locked.isEmpty()) View.GONE else View.VISIBLE
         // Analyze is offered for a locked satellite that's in the reticle.
         val focusLocked = focus != null && locked.any { it.satellite.noradId == focus.satellite.noradId }
         analyzeButton.visibility = if (focusLocked) View.VISIBLE else View.GONE
         if (focusLocked) analyzeButton.text = getString(R.string.analyze_named, focus!!.satellite.name)
         clearButton.text = getString(R.string.clear_selection, locked.size)
+
+        // An aircraft in the reticle wins over anything but a locked satellite there: it's the
+        // likelier explanation for a moving light, and that's the question being asked.
+        if (aircraft != null && !focusLocked) {
+            renderAircraftCard(aircraft, alsoInCircle = focus?.satellite?.name)
+            return
+        }
 
         // Prefer the locked copy of the focused satellite: it carries the color slot.
         val shown = focus?.let { f -> locked.firstOrNull { it.satellite.noradId == f.satellite.noradId } ?: f }
@@ -416,7 +432,7 @@ class MainActivity : AppCompatActivity() {
         infoCard.visibility = View.VISIBLE
     }
 
-    // ---- Moon alignment (design doc §6.2a) ----
+    // ---- Sun / Moon alignment (design doc §6.2a) ----
 
     /** The Align button opens or closes the inline panel; there are no dialogs. */
     private fun toggleAlignPanel() {
@@ -436,26 +452,39 @@ class MainActivity : AppCompatActivity() {
         alignBanner.visibility = View.GONE
     }
 
-    /** Where the Moon is now; the overlay marks it whenever it's above the horizon. */
-    private suspend fun refreshMoon() {
-        moon = viewModel.moon()
-        overlay.moonMarker = moon?.takeIf { it.elevationDeg > 0 }
-            ?.let { SkyMath.toEnu(AzEl(it.azimuthDeg, it.elevationDeg)) }
+    /** Where the Sun and Moon are now; the overlay marks each whenever it's above the horizon. */
+    private suspend fun refreshBodies() {
+        sun = viewModel.skyBody("Sun")
+        moon = viewModel.skyBody("Moon")
+        overlay.sunMarker = sun?.let(::markerDirection)
+        overlay.moonMarker = moon?.let(::markerDirection)
     }
 
-    /** Current heading source, then live guidance; "Align with Moon" is enabled only when it would work. */
+    private fun markerDirection(t: AlignTarget) =
+        t.takeIf { it.elevationDeg > 0 }?.let { SkyMath.toEnu(AzEl(it.azimuthDeg, it.elevationDeg)) }
+
+    /**
+     * Current heading source, then live guidance for whichever of the Sun and Moon is nearer the
+     * camera. Its button is enabled only once it's centred in elevation, which comes from gravity
+     * and can be trusted.
+     */
     private fun renderAlignBanner() {
-        val m = moon
         val att = viewModel.attitudeTracker.attitude.value
         val heading = att?.heading
         val aligned = heading?.alignedTo != null
         alignCompassButton.isEnabled = aligned
         alignCompassButton.alpha = if (aligned) 1f else DISABLED_ALPHA
+        val usable = listOfNotNull(sun, moon).filter { it.elevationDeg >= BODY_MIN_ELEVATION_DEG }
+        val target = att?.let { a ->
+            val boresight = SkyMath.toEnu(a.boresight)
+            usable.maxByOrNull { SkyMath.toEnu(AzEl(it.azimuthDeg, it.elevationDeg)) dot boresight }
+        }
+        alignTarget = target
         var ready = false
         alignText.text = buildString {
             if (aligned) {
                 val mins = heading?.alignedAtMillis?.let { (System.currentTimeMillis() - it) / 60_000 } ?: 0
-                append("Heading: aligned on the Moon $mins min ago")
+                append("Heading: aligned on the ${heading?.alignedTo} $mins min ago")
                 if (heading?.alignmentApproximate == true) append(" (approximate, re-align)")
             } else {
                 append("Heading: magnetometer")
@@ -463,30 +492,31 @@ class MainActivity : AppCompatActivity() {
             }
             append("\n")
             when {
-                m == null || att == null -> append("Waiting for GPS and orbit data.")
-                m.elevationDeg < 0 -> append("The Moon is below the horizon right now.")
-                m.elevationDeg < MOON_MIN_ELEVATION_DEG ->
-                    append("The Moon is too low (%.0f° up). Wait until it's above %.0f°.".format(m.elevationDeg, MOON_MIN_ELEVATION_DEG))
+                att == null || (sun == null && moon == null) -> append("Waiting for GPS and orbit data.")
+                target == null ->
+                    append("The Sun and Moon are both below %.0f° right now.".format(BODY_MIN_ELEVATION_DEG))
                 else -> {
-                    val dAz = wrapDeg(m.azimuthDeg - att.boresight.azimuthDeg)
-                    val dEl = m.elevationDeg - att.boresight.elevationDeg
-                    // Elevation comes from gravity and is trustworthy, so it tells whether the Moon is centred.
+                    val name = target.name
+                    val dAz = wrapDeg(target.azimuthDeg - att.boresight.azimuthDeg)
+                    val dEl = target.elevationDeg - att.boresight.elevationDeg
                     ready = Math.abs(dEl) <= MAX_CENTERING_ERROR_DEG
-                    append("Center the Moon in the circle, then tap Align with Moon.")
+                    append("Center the $name in the circle, then tap Align with $name.")
+                    if (target.kind == TargetKind.SUN) append("\nDon't look at the Sun directly; aim using the screen.")
                     append("\nOff by az %+.1f°  el %+.1f°".format(dAz, dEl))
                     if (!ready) append("\nNot centered yet: tilt %s.".format(if (dEl > 0) "up" else "down"))
-                    if (m.elevationDeg > MOON_HIGH_ELEVATION_DEG) append("\nThe Moon is high, so the alignment is less precise.")
+                    if (target.elevationDeg > BODY_HIGH_ELEVATION_DEG) append("\nThe $name is high, so the alignment is less precise.")
                 }
             }
         }
-        alignMoonButton.isEnabled = ready
-        alignMoonButton.alpha = if (ready) 1f else DISABLED_ALPHA
+        alignBodyButton.text = getString(R.string.align_with, target?.name ?: "Moon")
+        alignBodyButton.isEnabled = ready
+        alignBodyButton.alpha = if (ready) 1f else DISABLED_ALPHA
     }
 
-    private fun alignOnMoon() {
-        val m = moon ?: return
+    private fun alignOnBody() {
+        val t = alignTarget ?: return
         val att = viewModel.attitudeTracker.attitude.value ?: return
-        viewModel.attitudeTracker.align("Moon", wrapDeg(m.azimuthDeg - att.boresight.azimuthDeg))
+        viewModel.attitudeTracker.align(t.name, wrapDeg(t.azimuthDeg - att.boresight.azimuthDeg))
         stopAligning()
     }
 
@@ -521,6 +551,61 @@ class MainActivity : AppCompatActivity() {
             else -> "compass"
         }
         return "HEADING $source\n        field $field$dev"
+    }
+
+    private fun renderAircraftCard(a: SkyAircraft, alsoInCircle: String?) {
+        val ac = a.aircraft
+        infoCard.text = SpannableStringBuilder().apply {
+            inSpans(ForegroundColorSpan(SkyOverlayView.AIRCRAFT_COLOR), RelativeSizeSpan(1.3f)) { append("● ") }
+            inSpans(StyleSpan(Typeface.BOLD), RelativeSizeSpan(1.3f)) { append(ac.callsign) }
+            append("\n")
+            inSpans(ForegroundColorSpan(SkyOverlayView.AIRCRAFT_COLOR), StyleSpan(Typeface.BOLD)) {
+                append("Aircraft, not a satellite")
+            }
+            append("\n")
+            // Who and what: airline from the callsign prefix, airframe from the registry.
+            val d = a.details
+            val who = listOfNotNull(
+                a.airline?.name ?: d?.owner,
+                listOfNotNull(d?.manufacturer, d?.type).joinToString(" ").takeIf { it.isNotBlank() },
+                d?.registration,
+            )
+            if (who.isNotEmpty()) append(who.joinToString("  ·  ")).append("\n")
+            inSpans(ForegroundColorSpan(0xFFB0B0B0.toInt())) {
+                append("ICAO ${ac.icao24.uppercase()}")
+                if (ac.originCountry.isNotBlank()) append("  ·  ${ac.originCountry}")
+            }
+            append("\n\n")
+            val route = a.route
+            when {
+                route != null -> {
+                    append("From      ${airport(route.origin)}\n")
+                    append("To        ${airport(route.destination)}\n")
+                }
+                a.routeRejected -> inSpans(ForegroundColorSpan(0xFFB0B0B0.toInt())) {
+                    append("Route unknown (the listed route doesn't match where it's flying)\n")
+                }
+            }
+            append("Altitude  %,.0f ft (%.1f km)%s\n".format(ac.altitudeM * FEET_PER_METER, ac.altitudeM / 1000, if (ac.altitudeIsGeometric) "" else " baro"))
+            append("Speed     %,.0f kt     Heading %03.0f°\n".format(ac.speedMs * KNOTS_PER_MS, ac.trackDeg))
+            append("Range     %.1f km    El %.1f°\n".format(a.rangeKm, a.elevationDeg))
+            val climb = ac.verticalRateMs * FEET_PER_METER * 60
+            if (Math.abs(climb) >= 100) append(if (climb > 0) "Climbing %,.0f ft/min\n".format(climb) else "Descending %,.0f ft/min\n".format(-climb))
+            if (alsoInCircle != null) {
+                inSpans(ForegroundColorSpan(0xFFB0B0B0.toInt())) { append("Satellite $alsoInCircle is also in the circle\n") }
+            }
+            inSpans(ForegroundColorSpan(0xFF909090.toInt()), RelativeSizeSpan(0.85f)) {
+                append("Position %d s old · ADS-B: OpenSky Network · route, aircraft: adsbdb".format(
+                    (System.currentTimeMillis() / 1000 - ac.positionTimeSec).coerceAtLeast(0)))
+            }
+        }
+        infoCard.visibility = View.VISIBLE
+    }
+
+    private fun airport(a: Airport): String = buildString {
+        append(a.municipality?.takeIf { it.isNotBlank() } ?: a.name)
+        if (a.code.isNotBlank()) append(" (${a.code})")
+        a.country?.takeIf { it.isNotBlank() }?.let { append(", $it") }
     }
 
     private fun buildHud(): String = buildString {
@@ -564,6 +649,20 @@ class MainActivity : AppCompatActivity() {
             if (sky == null) "CATALOG loading…"
             else "CATALOG ${sky.size} LEO  |  ${snapshot?.objects?.count { it.position.u > 0 } ?: 0} above horizon"
         )
+        val air = viewModel.air.value
+        val problem = viewModel.airProblem
+        append("\nAIR     ")
+        append(
+            when {
+                air != null -> "%d aircraft within %.0f km  (%d s ago%s)".format(
+                    air.aircraft.size, SkyViewModel.AIR_RADIUS_KM,
+                    (System.currentTimeMillis() - air.fetchedAtMillis) / 1000,
+                    air.creditsRemaining?.let { ", $it credits left" } ?: "",
+                ) + (problem?.let { ", $it" } ?: "")
+                problem != null -> problem
+                else -> "waiting…"
+            }
+        )
     }
 
     private fun accuracyLabel(status: Int) = when (status) {
@@ -587,13 +686,15 @@ class MainActivity : AppCompatActivity() {
         const val HUD_REFRESH_MS = 200L
         const val GLOBE_POSE_MS = 100L
         const val MAX_ZOOM = 8.0
-        /** Below this the Moon is in haze and refraction; above the high mark azimuth gets touchy. */
-        const val MOON_MIN_ELEVATION_DEG = 5.0
-        const val MOON_HIGH_ELEVATION_DEG = 70.0
-        /** The Moon must be this close in elevation (trusted) before alignment is allowed. */
+        const val FEET_PER_METER = 3.28084
+        const val KNOTS_PER_MS = 1.943844
+        /** Below this the Sun/Moon is in haze and refraction; above the high mark azimuth gets touchy. */
+        const val BODY_MIN_ELEVATION_DEG = 5.0
+        const val BODY_HIGH_ELEVATION_DEG = 70.0
+        /** The Sun/Moon must be this close in elevation (trusted) before alignment is allowed. */
         const val MAX_CENTERING_ERROR_DEG = 3.0
-        /** Moon position refresh outside alignment, in HUD ticks (2 s). */
-        const val MOON_REFRESH_TICKS = 10
+        /** Sun/Moon position refresh outside alignment, in HUD ticks (2 s). */
+        const val BODY_REFRESH_TICKS = 10
         const val DISABLED_ALPHA = 0.4f
         /** Used until the camera's real FOV is known. */
         const val DEFAULT_LONG_FOV_DEG = 70.0

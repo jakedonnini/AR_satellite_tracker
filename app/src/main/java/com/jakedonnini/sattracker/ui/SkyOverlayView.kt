@@ -17,6 +17,8 @@ import android.view.MotionEvent
 import android.view.View
 import androidx.core.graphics.withClip
 import com.jakedonnini.sattracker.ar.FocusSelector
+import com.jakedonnini.sattracker.air.AirTraffic
+import com.jakedonnini.sattracker.air.SkyAircraft
 import com.jakedonnini.sattracker.ar.OverlayGeometry
 import com.jakedonnini.sattracker.ar.Projector
 import com.jakedonnini.sattracker.camera.CameraFov
@@ -55,18 +57,24 @@ class SkyOverlayView @JvmOverloads constructor(
         val fov: CameraFov?,
         val focus: TrackedSatellite?,
         val locked: List<TrackedSatellite>,
+        val air: AirTraffic?,
     )
 
     var frameSource: (() -> Frame?)? = null
     var onFocusChanged: ((Satellite?) -> Unit)? = null
     /** A satellite marker was tapped. */
     var onSatelliteTapped: ((Satellite) -> Unit)? = null
+    /** The reticle picked up or lost an aircraft (ICAO address, or null). */
+    var onAircraftFocusChanged: ((String?) -> Unit)? = null
+    private var focusedAircraftId: String? = null
 
     /**
      * The Moon's true direction (null when below the horizon). Its marker is drawn where the
      * current heading puts it, so the gap to the real Moon in the camera shows the heading error.
      */
     var moonMarker: Enu? = null
+    /** Same for the Sun, the daytime heading check. */
+    var sunMarker: Enu? = null
     /** While aligning, the Moon marker is emphasized and an edge arrow points to it when off screen. */
     var aligning = false
 
@@ -110,6 +118,7 @@ class SkyOverlayView @JvmOverloads constructor(
     private val lockedPositions = HashMap<Int, Enu>()
     /** One projected point (x, y). */
     private val pt = FloatArray(2)
+    private val ptAhead = FloatArray(2)
     /** Projected track points (x, y pairs) and whether each one projected. */
     private var trackXy = FloatArray(0)
     private var trackOk = BooleanArray(0)
@@ -157,6 +166,32 @@ class SkyOverlayView @JvmOverloads constructor(
     private val arrowLabelPaint = text(Color.WHITE, 12f).apply { setShadowLayer(3 * dp, 0f, 0f, Color.BLACK) }
 
     private val path = Path()
+
+    // Aircraft: a plane silhouette (nose along +x) rotated to its direction of travel on screen,
+    // so it can't be mistaken for a satellite dot.
+    private val aircraftPaint = fill(AIRCRAFT_COLOR).apply { setShadowLayer(3 * dp, 0f, 0f, Color.BLACK) }
+    private val aircraftRingPaint = stroke(AIRCRAFT_COLOR, 2f)
+    private val aircraftLabelPaint = text(AIRCRAFT_COLOR, 12f).apply { setShadowLayer(3 * dp, 0f, 0f, Color.BLACK) }
+    private val aircraftPath = Path().apply {
+        val u = dp
+        moveTo(10 * u, 0f)            // nose
+        lineTo(2 * u, -1.5f * u)
+        lineTo(-1 * u, -9 * u)        // left wing tip
+        lineTo(-4 * u, -9 * u)
+        lineTo(-3 * u, -1.5f * u)
+        lineTo(-7 * u, -1.5f * u)
+        lineTo(-9 * u, -4.5f * u)     // tail
+        lineTo(-10 * u, -4.5f * u)
+        lineTo(-9 * u, 0f)
+        lineTo(-10 * u, 4.5f * u)
+        lineTo(-9 * u, 4.5f * u)
+        lineTo(-7 * u, 1.5f * u)
+        lineTo(-3 * u, 1.5f * u)
+        lineTo(-4 * u, 9 * u)         // right wing tip
+        lineTo(-1 * u, 9 * u)
+        lineTo(2 * u, 1.5f * u)
+        close()
+    }
 
     @SuppressLint("ClickableViewAccessibility") // taps are forwarded to performClick()
     override fun onTouchEvent(event: MotionEvent): Boolean = gestures.onTouchEvent(event)
@@ -302,10 +337,19 @@ class SkyOverlayView @JvmOverloads constructor(
             }
         }
 
+        val air = frame.air
+        if (air != null) {
+            drawAircraft(canvas, projector, air, now, w, h)
+        } else if (focusedAircraftId != null) {
+            focusedAircraftId = null
+            onAircraftFocusChanged?.invoke(null)
+        }
+
         // Reticle: the circle a satellite must enter to take focus.
         canvas.drawCircle(w / 2, h / 2, projector.radiusPx(focusSelector.enterDeg), reticlePaint)
 
-        moonMarker?.let { drawMoonMarker(canvas, projector, it) }
+        moonMarker?.let { drawBodyMarker(canvas, projector, it, MOON_LABEL) }
+        sunMarker?.let { drawBodyMarker(canvas, projector, it, SUN_LABEL) }
 
         // Hole: a locked satellite in the reticle gets a clear window onto the camera feed.
         val holeTracked = focusLocked
@@ -389,12 +433,63 @@ class SkyOverlayView @JvmOverloads constructor(
         drawLabel(canvas, cx, cy, radius + 8 * dp, name)
     }
 
-    /** Open diamond (distinct from satellite dots) on the Moon; an edge arrow only while aligning. */
-    private fun drawMoonMarker(canvas: Canvas, projector: Projector, dir: Enu) {
+    /**
+     * Every aircraft in view, dead-reckoned to now, pointing the way it's flying, with its
+     * callsign and altitude. The one nearest the centre inside the reticle gets a ring and is
+     * reported via [onAircraftFocusChanged]. No edge arrows, to keep the screen clear.
+     */
+    private fun drawAircraft(canvas: Canvas, projector: Projector, air: AirTraffic, now: Long, w: Float, h: Float) {
+        val reticle = projector.radiusPx(focusSelector.enterDeg)
+        var bestD2 = reticle * reticle
+        var best: SkyAircraft? = null
+        var bestX = 0f
+        var bestY = 0f
+        val list = air.aircraft
+        for (i in list.indices) {
+            val a = list[i]
+            val dt = ((now - a.epochMillis) / 1000.0).coerceIn(0.0, MAX_AIRCRAFT_EXTRAPOLATION_S)
+            val pe = a.e + a.ve * dt
+            val pn = a.n + a.vn * dt
+            val pu = a.u + a.vu * dt
+            if (pu <= 0) continue
+            if (!projector.project(pe, pn, pu, pt)) continue
+            val x = pt[0]
+            val y = pt[1]
+            if (x < -MARGIN || x > w + MARGIN || y < -MARGIN || y > h + MARGIN) continue
+            // Screen direction of travel: where it will be a few seconds from now.
+            val angle = if (projector.project(pe + a.ve * 5, pn + a.vn * 5, pu + a.vu * 5, ptAhead)) {
+                Math.toDegrees(atan2((ptAhead[1] - y).toDouble(), (ptAhead[0] - x).toDouble())).toFloat()
+            } else -90f
+            canvas.save()
+            canvas.translate(x, y)
+            canvas.rotate(angle)
+            canvas.drawPath(aircraftPath, aircraftPaint)
+            canvas.restore()
+            canvas.drawText(a.label, x + 13 * dp, y + 4 * dp, aircraftLabelPaint)
+            val dx = x - w / 2
+            val dy = y - h / 2
+            val d2 = dx * dx + dy * dy
+            if (d2 < bestD2) {
+                bestD2 = d2
+                best = a
+                bestX = x
+                bestY = y
+            }
+        }
+        if (best != null) canvas.drawCircle(bestX, bestY, 16 * dp, aircraftRingPaint)
+        val id = best?.aircraft?.icao24
+        if (id != focusedAircraftId) {
+            focusedAircraftId = id
+            onAircraftFocusChanged?.invoke(id)
+        }
+    }
+
+    /** Open diamond (distinct from satellite dots) on the Sun or Moon; an edge arrow only while aligning. */
+    private fun drawBodyMarker(canvas: Canvas, projector: Projector, dir: Enu, label: String) {
         if (!projector.project(dir.e, dir.n, dir.u, pt) ||
             pt[0] < 0f || pt[0] > width || pt[1] < 0f || pt[1] > height
         ) {
-            if (aligning) drawEdgeArrow(canvas, projector, dir, ALIGN_COLOR, MOON_LABEL, belowHorizon = false)
+            if (aligning) drawEdgeArrow(canvas, projector, dir, ALIGN_COLOR, label, belowHorizon = false)
             return
         }
         val x = pt[0]
@@ -408,7 +503,7 @@ class SkyOverlayView @JvmOverloads constructor(
         path.lineTo(x - r, y)
         path.close()
         canvas.drawPath(path, alignPaint)
-        if (aligning) drawLabel(canvas, x, y, r, MOON_LABEL)
+        if (aligning) drawLabel(canvas, x, y, r, label)
     }
 
     private fun drawMarker(canvas: Canvas, x: Float, y: Float, color: Int, radius: Float, ringGap: Float) {
@@ -533,9 +628,14 @@ class SkyOverlayView @JvmOverloads constructor(
 
     companion object {
         val FOCUS_COLOR = Color.rgb(255, 193, 7)
-        /** Moon (heading alignment) marker. */
+        /** Aircraft markers and labels: red, a colour no satellite uses. */
+        val AIRCRAFT_COLOR = Color.rgb(255, 82, 82)
+        private const val MAX_AIRCRAFT_EXTRAPOLATION_S = 60.0
+
+        /** Sun / Moon (heading alignment) markers. */
         val ALIGN_COLOR = Color.rgb(90, 200, 250)
         private const val MOON_LABEL = "Moon"
+        private const val SUN_LABEL = "Sun"
         private const val PASSIVE_MOON_ALPHA = 140
         /** Same green as the globe's golden-zone (likely visible) satellites. */
         val VISIBLE_COLOR = Color.rgb(52, 199, 89)

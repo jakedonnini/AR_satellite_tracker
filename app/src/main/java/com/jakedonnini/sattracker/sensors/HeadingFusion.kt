@@ -62,6 +62,9 @@ class HeadingFusion(
     var state: State = State.WARMUP
         private set
     val isAligned: Boolean get() = aligned
+    /** The alignment was carried across a gyro frame reset via the compass, so it's only approximate. */
+    var alignmentApproximate: Boolean = false
+        private set
 
     /** Re-enter fast convergence, e.g. after the user recalibrates the compass. */
     fun rewarm(nowNanos: Long) {
@@ -88,12 +91,14 @@ class HeadingFusion(
         val updated = wrap(current - Math.toRadians(azimuthErrorDeg))
         offsetRad = updated
         aligned = true
+        alignmentApproximate = false
         alignedMinusSample = wrap(updated - Math.toRadians(lastSampleDeg))
         state = State.ALIGNED
     }
 
     fun clearAlignment(nowNanos: Long) {
         aligned = false
+        alignmentApproximate = false
         rewarm(nowNanos)
     }
 
@@ -101,9 +106,24 @@ class HeadingFusion(
     fun onAbsolute(rAbs: FloatArray, rGame: FloatArray, timestampNanos: Long, field: FieldQuality) {
         val sample = yawOffset(rAbs, rGame)
         lastSampleDeg = Math.toDegrees(sample)
-        val current = offsetRad
-        if (current == null || frameRestarted) {
+        val held = offsetRad
+        if (held != null && frameRestarted) {
             frameRestarted = false
+            val reseed = if (aligned) wrap(sample + alignedMinusSample) else sample
+            // If the compass now roughly agrees with the held offset, the gyro frame survived the
+            // restart and the held heading (aligned, or held through a disturbed field) is better
+            // than one compass reading. Only a clean, unaligned compass is worth snapping to.
+            val frameKept = abs(Math.toDegrees(wrap(reseed - held))) <= RESTART_SAME_FRAME_DEG
+            if (frameKept && (aligned || field != FieldQuality.CLEAN)) {
+                lastNanos = timestampNanos
+                lastField = field
+                state = if (aligned) State.ALIGNED else State.HELD
+                return
+            }
+            if (aligned) alignmentApproximate = true
+            offsetRad = null
+        }
+        if (offsetRad == null) {
             offsetRad = if (aligned) wrap(sample + alignedMinusSample) else sample
             lastNanos = timestampNanos
             lastField = field
@@ -111,6 +131,7 @@ class HeadingFusion(
             state = if (aligned) State.ALIGNED else State.WARMUP
             return
         }
+        val current = offsetRad!!
 
         val dt = ((timestampNanos - lastNanos) / 1e9).coerceIn(0.0, 0.5)
         lastNanos = timestampNanos
@@ -171,6 +192,12 @@ class HeadingFusion(
     }
 
     companion object {
+        /**
+         * After a sensor restart, a compass/held-offset disagreement up to this means the gyro
+         * frame was kept (compass error); beyond it, the frame was reset and must be re-seeded.
+         */
+        const val RESTART_SAME_FRAME_DEG = 20.0
+
         /** ψ such that rAbs ≈ Rz(ψ)·rGame, from M = rAbs·rGameᵀ. */
         fun yawOffset(rAbs: FloatArray, rGame: FloatArray): Double {
             fun m(i: Int, j: Int): Double {
